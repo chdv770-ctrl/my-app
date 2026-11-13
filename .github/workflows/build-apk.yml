@@ -1,15 +1,31 @@
-name: Build APK
+name: Build HaBoox APK
 
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Unpack uploaded source (if present)
+        run: |
+          if [ -f source.zip ]; then
+            rm -rf app build.gradle.kts settings.gradle.kts gradle.properties
+            unzip -o -q source.zip -d .
+            rm -f source.zip
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "HaBoox: unpack source" || true
+            git push || true
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -20,11 +36,38 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Signing key alias
+        run: |
+          A=$(keytool -list -keystore app/haboox.p12 -storetype pkcs12 -storepass haboox123 | grep -i PrivateKeyEntry | head -1 | cut -d, -f1)
+          echo "alias: $A"
+          echo "KS_ALIAS=$A" >> "$GITHUB_ENV"
 
-      - name: Upload APK
+      - name: Build release APK
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          cp app/build/outputs/apk/release/app-release.apk HaBoox.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BooxHome-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: HaBoox-apk
+          path: HaBoox.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0.${{ github.run_number }}
+          name: הבוקס 2.0.${{ github.run_number }}
+          body: קובץ ההתקנה של הבוקס – מסך בית ל‑BOOX Go 6. הורידו את HaBoox.apk והתקינו.
+          files: HaBoox.apk
+          make_latest: true
+
+      - name: Publish build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete build-log -y --cleanup-tag || true
+          (grep -E "^e: |error:|FAILURE|What went wrong" -A3 build.log | head -c 50000; echo; echo ----; tail -c 20000 build.log) > build-log.txt 2>/dev/null || echo "no log" > build-log.txt
+          gh release create build-log build-log.txt --prerelease --title "build log" --notes "failed build log"
