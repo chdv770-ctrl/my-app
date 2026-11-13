@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">הבוקס</string>
+    <string name="service_name">הבוקס – פעולות מסך</string>
+    <string name="service_desc">מאפשר להבוקס לבצע פעולות חזרה ופתיחת חלונות אחרונים מתוך מרכז הבקרה. השירות אינו קורא תוכן מהמסך.</string>
+</resources>

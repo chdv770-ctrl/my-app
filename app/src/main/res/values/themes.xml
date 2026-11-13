@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.BooxHome" parent="Theme.AppCompat.Light.NoActionBar">
+    <style name="Theme.HaBoox" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#111111</item>
+        <item name="colorPrimaryDark">#FFFFFF</item>
+        <item name="colorAccent">#111111</item>
+        <item name="colorControlActivated">#111111</item>
+        <item name="colorControlNormal">#555555</item>
         <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
     </style>
 </resources>

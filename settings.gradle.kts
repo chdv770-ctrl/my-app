@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BooxHome"
+rootProject.name = "HaBoox"
 include(":app")
