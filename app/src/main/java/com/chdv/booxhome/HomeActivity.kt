@@ -135,7 +135,7 @@ class HomeActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
                     if (label == "הגדרות") {
-                        startActivity(Intent(android.provider.Settings.ACTION_SETTINGS))
+                        startActivity(Intent(this@HomeActivity, SettingsActivity::class.java))
                     }
                 }
             })

@@ -13,6 +13,11 @@
         android:theme="@style/Theme.BooxHome">
 
         <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".HomeActivity"
             android:exported="true"
             android:launchMode="singleTask"
