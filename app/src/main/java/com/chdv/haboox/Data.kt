@@ -487,7 +487,8 @@ object Dock {
     val builtIn: List<Pair<String, String>> = listOf(
         "wifi" to "Wi‑Fi", "files" to "קבצים", "books" to "ספרים", "settings" to "הגדרות",
         "apps" to "כל האפליקציות", "calendar" to "לוח שנה", "control" to "מרכז בקרה",
-        "refresh" to "רענון מסך", "bt" to "בלוטות׳", "sd" to "כרטיס זיכרון", "android" to "הגדרות אנדרואיד"
+        "refresh" to "רענון מסך", "bt" to "בלוטות׳", "sd" to "כרטיס זיכרון", "android" to "הגדרות אנדרואיד",
+        "addwin" to "חלון חדש"
     )
 
     fun items(): List<String> =
@@ -495,28 +496,83 @@ object Dock {
 
     fun save(l: List<String>) = Prefs.putList("dock", l)
 
+    fun setSlot(i: Int, k: String) {
+        val l = items().toMutableList()
+        if (i in l.indices) l[i] = k else l.add(k)
+        save(l)
+    }
+
     fun addApp(key: String) {
         val l = items().toMutableList()
         val k = "app:$key"
         if (k in l) return
-        if (l.size >= 6) l.removeAt(l.size - 1)
-        l.add(k); save(l)
+        val e = l.indexOf("empty")
+        if (e >= 0) l[e] = k
+        else { if (l.size >= 6) l.removeAt(l.size - 1); l.add(k) }
+        save(l)
     }
 
-    fun glyph(k: String): String = when (k) {
-        "wifi" -> "wifi"; "files" -> "folder"; "books" -> "book"; "settings" -> "gear"
-        "apps" -> "grid"; "calendar" -> "calendar"; "control" -> "sliders"; "refresh" -> "refresh"
-        "bt" -> "bt"; "sd" -> "sd"; "android" -> "screen"; else -> "dots"
+    fun glyph(k: String): String = when {
+        k.startsWith("folder:") -> "folder"
+        k.startsWith("book:") -> "book"
+        else -> when (k) {
+            "wifi" -> "wifi"; "files" -> "folder"; "books" -> "book"; "settings" -> "gear"
+            "apps" -> "grid"; "calendar" -> "calendar"; "control" -> "sliders"; "refresh" -> "refresh"
+            "bt" -> "bt"; "sd" -> "sd"; "android" -> "screen"; "addwin" -> "plus"; else -> "dots"
+        }
     }
 
-    fun shortLabel(k: String): String = when (k) {
-        "wifi" -> "Wi‑Fi"; "files" -> "קבצים"; "books" -> "ספרים"; "settings" -> "הגדרות"
-        "apps" -> "אפליקציות"; "calendar" -> "לוח"; "control" -> "בקרה"; "refresh" -> "רענון"
-        "bt" -> "בלוטות׳"; "sd" -> "כרטיס"; "android" -> "אנדרואיד"
-        else -> Apps.byKey(k.removePrefix("app:"))?.let { Apps.name(it) } ?: "אפליקציה"
+    fun shortLabel(k: String): String = when {
+        k.startsWith("folder:") -> Store.folderName(k.removePrefix("folder:"))
+        k.startsWith("book:") -> File(k.removePrefix("book:")).nameWithoutExtension
+        k.startsWith("app:") -> Apps.byKey(k.removePrefix("app:"))?.let { Apps.name(it) } ?: "אפליקציה"
+        else -> when (k) {
+            "wifi" -> "Wi‑Fi"; "files" -> "קבצים"; "books" -> "ספרים"; "settings" -> "הגדרות"
+            "apps" -> "אפליקציות"; "calendar" -> "לוח"; "control" -> "בקרה"; "refresh" -> "רענון"
+            "bt" -> "בלוטות׳"; "sd" -> "כרטיס"; "android" -> "אנדרואיד"; "addwin" -> "חלון"; "empty" -> ""
+            else -> ""
+        }
+    }
+
+    fun describe(k: String): String = when {
+        k == "empty" -> "ריק"
+        k.startsWith("folder:") -> "תיקייה · " + shortLabel(k)
+        k.startsWith("book:") -> "ספר · " + shortLabel(k)
+        k.startsWith("app:") -> "אפליקציה · " + shortLabel(k)
+        else -> builtIn.firstOrNull { it.first == k }?.second ?: k
     }
 }
 
+/** Home screen windows (pages); each is an ordered list of blocks. */
+object Pages {
+    val coreBlocks: List<Pair<String, String>> = listOf(
+        "hero" to "שעון ותאריך", "books" to "ספרים אחרונים", "apps" to "אפליקציות", "folders" to "תיקיות"
+    )
+    val gadgetBlocks: List<Pair<String, String>> = listOf(
+        "g:calendar" to "לוח חודשי", "g:battery" to "סוללה ואחסון", "g:note" to "פתק",
+        "g:book" to "הספר שאני קורא", "g:clock" to "שעון ענק"
+    )
+
+    fun load(): MutableList<MutableList<String>> {
+        if (!Prefs.has("pages")) {
+            val first = mutableListOf("hero")
+            first.addAll(Prefs.list("gadgets"))
+            first.addAll(listOf("books", "apps", "folders"))
+            return mutableListOf(first)
+        }
+        val l = Prefs.s("pages", "").split('\n')
+            .map { p -> p.split(',').filter { it.isNotEmpty() }.toMutableList() }.toMutableList()
+        if (l.isEmpty()) l.add(mutableListOf())
+        return l
+    }
+
+    fun save(p: List<List<String>>) = Prefs.put("pages", p.joinToString("\n") { it.joinToString(",") })
+
+    fun name(k: String): String =
+        (coreBlocks + gadgetBlocks).firstOrNull { it.first == k }?.second ?: "גאדג׳ט"
+
+    fun pageOf(p: List<List<String>>, k: String): Int = p.indexOfFirst { k in it }
+}
 /* ================================================================ covers */
 
 object Covers {

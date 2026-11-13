@@ -74,10 +74,16 @@ class FilesActivity : BaseActivity() {
 
         if (pick) {
             val bar = hbox().apply { setPadding(dp(16), dp(10), dp(16), dp(14)); gravity = Gravity.CENTER }
-            bar.addView(pillButton("הוספת התיקייה הזאת למסך הבית") {
+            val dockSlot = intent.getIntExtra("dockSlot", -1)
+            bar.addView(pillButton(if (dockSlot >= 0) "בחירת התיקייה הזאת לשורה התחתונה" else "הוספת התיקייה הזאת למסך הבית") {
                 if (atVolumes) { toast("בחרו קודם אחסון או תיקייה"); return@pillButton }
-                Store.addHomeFolder(cur.path)
-                toast("נוספה למסך הבית: " + Store.folderName(cur.path))
+                if (dockSlot >= 0) {
+                    Dock.setSlot(dockSlot, "folder:" + cur.path)
+                    toast("נשמרה בשורה התחתונה: " + Store.folderName(cur.path))
+                } else {
+                    Store.addHomeFolder(cur.path)
+                    toast("נוספה למסך הבית: " + Store.folderName(cur.path))
+                }
                 finish()
             }, lp(MATCH, WRAP))
             pickBar = bar
@@ -118,7 +124,7 @@ class FilesActivity : BaseActivity() {
         if (!hasFiles()) {
             body.removeAllViews()
             val wrap = FrameLayout(this).apply { setPadding(dp(16), dp(20), dp(16), 0) }
-            wrap.addView(permissionCard("כדי לעיין בקבצים ובכרטיס הזיכרון יש לאשר להבוקס גישה לכל הקבצים במכשיר."),
+            wrap.addView(permissionCard("כדי לעיין בקבצים ובכרטיס הזיכרון יש לאשר להיכל הספרים גישה לכל הקבצים במכשיר."),
                 FrameLayout.LayoutParams(MATCH, WRAP))
             body.addView(wrap, FrameLayout.LayoutParams(MATCH, MATCH))
             return

@@ -33,6 +33,10 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+/**
+ * Home screen made of "windows" (pages). Each window holds blocks: hero (clock), books, apps,
+ * folders and gadgets. Apps that don't fit spill over into automatic extra windows.
+ */
 class HomeActivity : BaseActivity() {
 
     companion object {
@@ -41,36 +45,41 @@ class HomeActivity : BaseActivity() {
         private const val REQ_CONF = 42
     }
 
+    private class Ref(val user: Int, val appsFrom: Int)
+
     private lateinit var root: FrameLayout
     private lateinit var mainCol: LinearLayout
-    private lateinit var clock: TextView
-    private lateinit var greetTv: TextView
-    private lateinit var gregTv: TextView
-    private lateinit var hebTv: TextView
-    private lateinit var eventTv: TextView
+    private lateinit var pageHost: FrameLayout
+    private lateinit var dots: LinearLayout
+    private lateinit var dockBox: FrameLayout
+    private lateinit var banner: LinearLayout
     private lateinit var statusBat: TextView
     private lateinit var statusBatIcon: ImageView
     private lateinit var statusWifi: ImageView
-    private lateinit var banner: LinearLayout
-    private lateinit var gadgetsBox: LinearLayout
-    private lateinit var booksSection: LinearLayout
-    private lateinit var booksRow: LinearLayout
-    private lateinit var appsBox: FrameLayout
-    private lateinit var pageInd: LinearLayout
-    private lateinit var foldersSection: LinearLayout
-    private lateinit var foldersRow: LinearLayout
-    private lateinit var dockBox: FrameLayout
     private var panel: View? = null
+
+    // hero references (only when the hero is on the visible window)
+    private var clockTv: TextView? = null
+    private var greetTv: TextView? = null
+    private var hebTv: TextView? = null
+    private var gregTv: TextView? = null
+    private var eventTv: TextView? = null
+    private val bigClocks = ArrayList<TextView>()
 
     private lateinit var host: AppWidgetHost
     private lateinit var awm: AppWidgetManager
     private val widgetViews = HashMap<Int, AppWidgetHostView>()
     private var pendingWidget = -1
+    private var pendingPage = 0
 
     private var apps: List<AppEntry> = emptyList()
-    private var page = 0
-    private var pages = 1
+    private var userPages: MutableList<MutableList<String>> = mutableListOf()
+    private var refs: List<Ref> = emptyList()
+    private var cur = 0
+    private val baseShown = HashMap<Int, Int>()
+    private var fullPer = 0
     private var sig = ""
+    private var lastBookCount = -1
 
     private var downX = 0f
     private var downY = 0f
@@ -88,10 +97,11 @@ class HomeActivity : BaseActivity() {
         sig = Look.sig()
         awm = AppWidgetManager.getInstance(this)
         host = AppWidgetHost(applicationContext, HOST_ID)
+        userPages = Pages.load()
         build()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (panel != null) hidePanel() else if (page != 0) { page = 0; renderApps() }
+                if (panel != null) hidePanel() else if (cur != 0) { cur = 0; renderPage() }
             }
         })
         val pf = IntentFilter().apply {
@@ -101,7 +111,14 @@ class HomeActivity : BaseActivity() {
             addAction(Intent.ACTION_PACKAGE_REPLACED)
             addDataScheme("package")
         }
+        val sdf = IntentFilter().apply {
+            addAction(Intent.ACTION_EXTERNAL_APPLICATIONS_AVAILABLE)
+            addAction(Intent.ACTION_EXTERNAL_APPLICATIONS_UNAVAILABLE)
+            addAction(Intent.ACTION_USER_UNLOCKED)
+            addAction(Intent.ACTION_MEDIA_MOUNTED)
+        }
         try { registerReceiver(pkgReceiver, pf) } catch (e: Exception) { ignore(e) }
+        try { registerReceiver(pkgReceiver, sdf) } catch (e: Exception) { ignore(e) }
         handleExtras(intent)
     }
 
@@ -131,7 +148,13 @@ class HomeActivity : BaseActivity() {
             addAction(Intent.ACTION_BATTERY_CHANGED)
         }
         registerReceiver(tick, f)
-        refreshAll()
+        userPages = Pages.load()
+        renderBanner()
+        renderDock()
+        renderPage()
+        reloadApps()
+        scanBooks()
+        if (Prefs.b("autoUpdate", true)) Updater.dailyCheck(this)
     }
 
     override fun onPause() {
@@ -142,128 +165,187 @@ class HomeActivity : BaseActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         hidePanel()
-        if (page != 0) { page = 0; renderApps() }
+        if (cur != 0) { cur = 0; renderPage() }
         handleExtras(intent)
     }
 
     private fun handleExtras(i: Intent?) {
         if (i != null && i.getBooleanExtra("gadgets", false)) {
             i.removeExtra("gadgets")
-            root.post { gadgetMenu() }
+            root.post { addBlockMenu(curUser()) }
         }
     }
 
-    /* ------------------------------------------------------------ layout */
+    private fun curUser(): Int = refs.getOrNull(cur)?.user ?: 0
+
+    private fun savePages() = Pages.save(userPages)
+
+    /* ------------------------------------------------------------ frame */
 
     private fun build() {
         root = FrameLayout(this).apply { setBackgroundColor(pal.bg) }
-        mainCol = vbox().apply {
-            setPadding(dp(14), 0, dp(14), dp(10))
-            isLongClickable = true
-            setOnLongClickListener { homeMenu(); true }
-        }
-        val main = mainCol
+        mainCol = vbox().apply { setPadding(dp(14), dp(4), dp(14), dp(10)) }
 
-        // status strip with pull handle
-        val strip = FrameLayout(this).apply { setOnClickListener { showPanel() } }
-        val leftS = hbox()
+        // wide control-center button (instead of a thin pull bar)
+        val bar = hbox().apply {
+            background = pressBg(pal.card, pal.card2, 20, if (pal.night || pal.vivid) 0 else dp(1), pal.line)
+            setPadding(dp(14), dp(7), dp(12), dp(7))
+            setOnClickListener { showPanel() }
+        }
+        bar.addView(glyphView("sliders", pal.ink, 20))
+        bar.addView(label("מרכז בקרה", 14.5f, pal.text, true), lp(WRAP, WRAP).m(dp(8), 0, dp(4), 0))
+        bar.addView(glyphView("chev_down", pal.sub, 16))
+        bar.addView(View(this), lp(0, 1, 1f))
         statusWifi = ImageView(this)
-        leftS.addView(statusWifi, lp(dp(18), dp(18)))
-        strip.addView(leftS, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.START or Gravity.CENTER_VERTICAL))
-        val pill = View(this).apply { background = roundBg(pal.sub, dp(3).toFloat()) }
-        strip.addView(pill, FrameLayout.LayoutParams(dp(46), dp(5), Gravity.CENTER))
-        val rightS = hbox()
-        statusBat = label("", 13f, pal.text, true)
+        bar.addView(statusWifi, lp(dp(18), dp(18)).m(0, 0, dp(10), 0))
+        statusBat = label("", 13.5f, pal.text, true)
+        bar.addView(statusBat)
         statusBatIcon = ImageView(this)
-        rightS.addView(statusBat)
-        rightS.addView(statusBatIcon, lp(dp(22), dp(22)).m(dp(4), 0, 0, 0))
-        strip.addView(rightS, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.CENTER_VERTICAL))
-        main.addView(strip, lp(MATCH, dp(28)))
+        bar.addView(statusBatIcon, lp(dp(24), dp(24)).m(dp(4), 0, 0, 0))
+        mainCol.addView(bar, lp(MATCH, WRAP))
 
-        // hero card: greeting, big clock, dates
-        val hero = vbox().apply {
-            background = Look.heroBg(pal, dp(26).toFloat())
-            setPadding(dp(20), dp(14), dp(20), dp(16))
-            if (pal.vivid) elevation = dp(4).toFloat()
-            setOnClickListener { go(Intent(context, CalendarActivity::class.java)) }
-            setOnLongClickListener { homeMenu(); true }
-        }
-        val top = hbox()
-        greetTv = label("", 15f, pal.heroSub, true)
-        top.addView(greetTv, lp(0, WRAP, 1f))
-        top.addView(ImageView(this).apply { setImageDrawable(Glyph("calendar", pal.heroSub)) }, lp(dp(20), dp(20)))
-        hero.addView(top, lp(MATCH, WRAP))
-        val mid = hbox().apply { gravity = Gravity.BOTTOM }
-        clock = TextView(this).apply {
-            setTextColor(pal.heroText)
-            textSize = Look.clockSize()
-            typeface = Look.heavy
-            includeFontPadding = false
-            textDirection = View.TEXT_DIRECTION_LTR
-            letterSpacing = -0.02f
-        }
-        mid.addView(clock, lp(WRAP, WRAP))
-        mid.addView(View(this), lp(0, 1, 1f))
-        val dates = vbox().apply { gravity = Gravity.END }
-        hebTv = label("", 20f, pal.heroText, true).oneLine().apply { gravity = Gravity.END }
-        gregTv = label("", 13.5f, pal.heroSub).oneLine().apply { gravity = Gravity.END }
-        dates.addView(hebTv, lp(WRAP, WRAP))
-        dates.addView(gregTv, lp(WRAP, WRAP))
-        mid.addView(dates, lp(WRAP, WRAP).m(dp(10), 0, 0, dp(8)))
-        hero.addView(mid, lp(MATCH, WRAP).m(0, dp(2), 0, 0))
-        eventTv = label("", 13.5f, pal.heroText, true).apply {
-            val chipBg = if (pal.hero.size > 1 || pal.night || !pal.pastel) 0x33FFFFFF else 0x22000000
-            background = roundBg(if (pal.heroText == Color.WHITE) chipBg else 0x1A000000, dp(12).toFloat())
-            setPadding(dp(12), dp(4), dp(12), dp(5))
-            visibility = View.GONE
-        }
-        val evWrap = hbox().apply { addView(eventTv, lp(WRAP, WRAP)) }
-        hero.addView(evWrap, lp(MATCH, WRAP).m(0, dp(8), 0, 0))
-        main.addView(hero, lp(MATCH, WRAP).m(0, dp(2), 0, 0))
-
-        // setup banner
         banner = vbox().apply { visibility = View.GONE }
-        main.addView(banner, lp(MATCH, WRAP).m(0, dp(8), 0, 0))
+        mainCol.addView(banner, lp(MATCH, WRAP).m(0, dp(8), 0, 0))
 
-        // gadgets
-        gadgetsBox = vbox()
-        main.addView(gadgetsBox, lp(MATCH, WRAP))
-
-        // recent books
-        booksSection = vbox()
-        booksSection.addView(sectionTitle("book", "ספרים אחרונים", "הכול") { go(Intent(this, BooksActivity::class.java)) })
-        booksRow = hbox().apply { gravity = Gravity.TOP }
-        booksSection.addView(booksRow, lp(MATCH, WRAP))
-        main.addView(booksSection, lp(MATCH, WRAP).m(0, dp(12), 0, 0))
-
-        // apps
-        val appsHead = hbox()
-        appsHead.addView(sectionTitle("grid", "אפליקציות", "הכול") { go(Intent(this, AppsActivity::class.java)) }, lp(0, WRAP, 1f))
-        main.addView(appsHead, lp(MATCH, WRAP).m(0, dp(10), 0, 0))
-        appsBox = FrameLayout(this)
-        appsBox.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
-            if (b - t != ob - ot) appsBox.post { renderApps() }
+        pageHost = FrameLayout(this)
+        pageHost.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
+            if (b - t != ob - ot) pageHost.post { computeFullPer(); renderPage() }
         }
-        main.addView(appsBox, lp(MATCH, 0, 1f))
-        pageInd = hbox().apply { gravity = Gravity.CENTER }
-        main.addView(pageInd, lp(MATCH, WRAP))
+        mainCol.addView(pageHost, lp(MATCH, 0, 1f))
 
-        // folders
-        foldersSection = vbox()
-        foldersSection.addView(sectionTitle("folder", "תיקיות", "הוספה") { pickFolder() })
-        foldersRow = hbox()
-        foldersSection.addView(foldersRow, lp(MATCH, WRAP))
-        main.addView(foldersSection, lp(MATCH, WRAP).m(0, dp(4), 0, 0))
+        dots = hbox().apply { gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0) }
+        mainCol.addView(dots, lp(MATCH, WRAP))
 
-        // dock
         dockBox = FrameLayout(this)
-        main.addView(dockBox, lp(MATCH, WRAP).m(0, dp(12), 0, 0))
+        mainCol.addView(dockBox, lp(MATCH, WRAP).m(0, dp(8), 0, 0))
 
-        root.addView(main, FrameLayout.LayoutParams(MATCH, MATCH))
+        root.addView(mainCol, FrameLayout.LayoutParams(MATCH, MATCH))
         setContentView(root)
     }
 
-    private fun sectionTitle(glyph: String, t: String, link: String?, onLink: (() -> Unit)?): View {
+    private fun cellHeight(): Int {
+        val labels = Prefs.b("labels", true)
+        return dp(if (labels) (60 + 30 * Look.scale()).toInt() else 76)
+    }
+
+    private fun computeFullPer() {
+        val h = pageHost.height - dp(40)
+        if (h <= 0) return
+        fullPer = maxOf(1, h / cellHeight()) * Prefs.i("cols", 4)
+    }
+
+    private fun computeRefs() {
+        val out = ArrayList<Ref>()
+        userPages.forEachIndexed { ui, blocks ->
+            out.add(Ref(ui, -1))
+            if ("apps" in blocks && fullPer > 0 && apps.isNotEmpty()) {
+                var off = baseShown[ui] ?: (fullPer / 2)
+                while (off < apps.size) { out.add(Ref(ui, off)); off += fullPer }
+            }
+        }
+        refs = out
+        cur = cur.coerceIn(0, maxOf(0, refs.size - 1))
+    }
+
+    private fun goToUserPage(ui: Int) {
+        computeRefs()
+        val i = refs.indexOfFirst { it.user == ui && it.appsFrom < 0 }
+        if (i >= 0) cur = i
+        renderPage()
+    }
+
+    /* ------------------------------------------------------------ rendering */
+
+    private fun renderPage() {
+        clockTv = null; greetTv = null; hebTv = null; gregTv = null; eventTv = null
+        bigClocks.clear()
+        if (userPages.isEmpty()) userPages.add(mutableListOf())
+        computeRefs()
+        pageHost.removeAllViews()
+        val ref = refs.getOrNull(cur) ?: return
+        val v = if (ref.appsFrom >= 0) appsOnlyPage(ref.appsFrom) else basePage(ref.user)
+        pageHost.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+        renderDots()
+        updateClock()
+    }
+
+    private fun renderDots() {
+        dots.removeAllViews()
+        if (refs.size <= 1 && !Prefs.b("showAddWin", true)) { dots.visibility = View.GONE; return }
+        dots.visibility = View.VISIBLE
+        refs.forEachIndexed { i, r ->
+            val active = i == cur
+            val d = View(this).apply {
+                background = if (active) roundBg(pal.ink, dp(4).toFloat())
+                else if (r.appsFrom >= 0) roundBg(pal.sub, dp(1).toFloat())
+                else roundBg(Color.TRANSPARENT, dp(4).toFloat(), dp(1), pal.sub)
+            }
+            val wrap = FrameLayout(this).apply {
+                addView(d, FrameLayout.LayoutParams(dp(if (active) 20 else 8), dp(8), Gravity.CENTER))
+                setOnClickListener { cur = i; renderPage() }
+            }
+            dots.addView(wrap, lp(dp(if (active) 28 else 18), dp(24)))
+        }
+        if (Prefs.b("showAddWin", true)) {
+            val plus = FrameLayout(this).apply {
+                addView(ImageView(context).apply { setImageDrawable(Glyph("plus", pal.sub, 2.2f)) },
+                    FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER))
+                setOnClickListener { newPage() }
+            }
+            dots.addView(plus, lp(dp(28), dp(24)).m(dp(6), 0, 0, 0))
+        }
+    }
+
+    private fun basePage(ui: Int): View {
+        val col = vbox().apply {
+            isLongClickable = true
+            setOnLongClickListener { homeMenu(); true }
+        }
+        val blocks = userPages[ui]
+        if (blocks.isEmpty()) {
+            val c = vbox().apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = roundBg(pal.card, dp(22).toFloat(), if (pal.night) 0 else dp(1), pal.line)
+                setPadding(dp(18), dp(22), dp(18), dp(22))
+            }
+            c.addView(glyphView("widget", pal.ink, 42))
+            c.addView(label("חלון ריק", 19f, pal.text, true).apply { setPadding(0, dp(10), 0, 0) })
+            c.addView(label("אפשר להוסיף לכאן שעון, ספרים, אפליקציות, תיקיות או גאדג׳טים. לחיצה ארוכה על המסך פותחת את האפשרויות.", 14f, pal.sub).apply {
+                gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(14))
+            })
+            c.addView(pillButton("הוספת רכיב") { addBlockMenu(ui) })
+            if (userPages.size > 1) c.addView(pillButton("סגירת החלון", filled = false) { closePage(ui) }, lp(WRAP, WRAP).m(0, dp(8), 0, 0))
+            col.addView(c, lp(MATCH, WRAP).m(0, dp(10), 0, 0))
+            col.addView(View(this), lp(MATCH, 0, 1f))
+            return col
+        }
+        val flex = if ("apps" in blocks) "apps" else if ("books" in blocks) "books" else null
+        blocks.forEachIndexed { bi, k ->
+            val isFlex = k == flex
+            val v = blockView(k, ui, bi, isFlex) ?: return@forEachIndexed
+            col.addView(v, if (isFlex) lp(MATCH, 0, 1f).m(0, dp(10), 0, 0) else lp(MATCH, WRAP).m(0, dp(10), 0, 0))
+        }
+        if (flex == null) col.addView(View(this), lp(MATCH, 0, 1f))
+        return col
+    }
+
+    private fun blockView(k: String, ui: Int, bi: Int, flex: Boolean): View? {
+        val onLong = { blockMenu(k, ui, bi) }
+        return when (k) {
+            "hero" -> heroView(onLong)
+            "books" -> booksBlock(flex, onLong)
+            "apps" -> appsBlock(ui, onLong)
+            "folders" -> foldersBlock(onLong)
+            "g:calendar" -> miniCalendar(bi, onLong)
+            "g:battery" -> batteryGadget(bi, onLong)
+            "g:note" -> noteGadget(bi, onLong)
+            "g:book" -> bookGadget(bi, onLong)
+            "g:clock" -> clockGadget(bi, onLong)
+            else -> if (k.startsWith("w:")) androidWidget(k, onLong) else null
+        }
+    }
+
+    private fun sectionTitle(glyph: String, t: String, link: String?, onLong: () -> Unit, onLink: (() -> Unit)?): View {
         val r = hbox()
         val badge = FrameLayout(this).apply {
             background = roundBg(if (pal.pastel) pal.tile(t.length) else pal.ink, dp(8).toFloat())
@@ -282,91 +364,67 @@ class HomeActivity : BaseActivity() {
             }
             r.addView(l, lp(WRAP, WRAP))
         }
+        val more = FrameLayout(this).apply {
+            addView(ImageView(context).apply { setImageDrawable(Glyph("dots", pal.sub)) }, FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER))
+            background = pressBg(Color.TRANSPARENT, pal.card2, 14)
+            setOnClickListener { onLong() }
+        }
+        r.addView(more, lp(dp(34), dp(30)).m(dp(4), 0, 0, 0))
         r.setPadding(0, 0, 0, dp(7))
+        r.setOnLongClickListener { onLong(); true }
         return r
     }
 
-    /* ------------------------------------------------------------ dock */
+    /* ------------------------------------------------------------ hero */
 
-    private fun renderDock() {
-        dockBox.removeAllViews()
-        val keys = Dock.items()
-        if (keys.isEmpty()) { dockBox.visibility = View.GONE; return }
-        dockBox.visibility = View.VISIBLE
-        val d = hbox().apply {
-            background = roundBg(pal.dockBg, dp(30).toFloat(), if (pal.dockBg == pal.card && !pal.night) dp(1) else 0, pal.line)
-            if (pal.vivid) elevation = dp(6).toFloat()
-            setPadding(dp(6), dp(9), dp(6), dp(9))
+    private fun heroView(onLong: () -> Unit): View {
+        val hero = vbox().apply {
+            background = Look.heroBg(pal, dp(26).toFloat())
+            clipToOutline = true
+            setPadding(dp(20), dp(14), dp(20), dp(16))
+            if (pal.vivid) elevation = dp(4).toFloat()
+            setOnClickListener { go(Intent(context, CalendarActivity::class.java)) }
+            setOnLongClickListener { onLong(); true }
         }
-        keys.forEachIndexed { i, k ->
-            val v = vbox().apply {
-                gravity = Gravity.CENTER
-                setPadding(0, dp(3), 0, dp(3))
-                background = pressBg(Color.TRANSPARENT, if (pal.dockBg == Color.WHITE) pal.card2 else 0x33FFFFFF, 20)
-            }
-            if (k.startsWith("app:")) {
-                val a = Apps.byKey(k.removePrefix("app:"))
-                if (a != null) v.addView(Apps.iconView(this, a, 32, pal, i), lp(dp(32), dp(32)))
-                else v.addView(glyphView("dots", pal.dockFg, 30))
-            } else v.addView(glyphView(Dock.glyph(k), pal.dockFg, 30))
-            v.addView(label(Dock.shortLabel(k), 12f, pal.dockFg, true).oneLine().apply { gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0) }, lp(MATCH, WRAP))
-            v.setOnClickListener { dockAction(k) }
-            v.setOnLongClickListener { dockMenu(); true }
-            d.addView(v, lp(0, WRAP, 1f))
+        val top = hbox()
+        val g = label("", 15f, pal.heroSub, true)
+        greetTv = g
+        top.addView(g, lp(0, WRAP, 1f))
+        top.addView(ImageView(this).apply { setImageDrawable(Glyph("calendar", pal.heroSub)) }, lp(dp(20), dp(20)))
+        hero.addView(top, lp(MATCH, WRAP))
+        val mid = hbox().apply { gravity = Gravity.BOTTOM }
+        val c = TextView(this).apply {
+            setTextColor(pal.heroText)
+            textSize = Look.clockSize()
+            typeface = Look.heavy
+            includeFontPadding = false
+            textDirection = View.TEXT_DIRECTION_LTR
+            letterSpacing = -0.02f
         }
-        dockBox.addView(d, FrameLayout.LayoutParams(MATCH, FrameLayout.LayoutParams.WRAP_CONTENT))
-    }
-
-    private fun dockAction(k: String) {
-        when (k) {
-            "wifi" -> openWifi()
-            "files" -> go(Intent(this, FilesActivity::class.java))
-            "books" -> go(Intent(this, BooksActivity::class.java))
-            "settings" -> go(Intent(this, SettingsActivity::class.java))
-            "apps" -> go(Intent(this, AppsActivity::class.java))
-            "calendar" -> go(Intent(this, CalendarActivity::class.java))
-            "control" -> showPanel()
-            "refresh" -> einkRefresh()
-            "bt" -> go(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
-            "sd" -> {
-                val sd = Store.volumes().firstOrNull { it.removable }
-                if (sd == null) toast("לא זוהה כרטיס זיכרון")
-                else go(Intent(this, FilesActivity::class.java).putExtra("volume", sd.dir.path))
-            }
-            "android" -> go(Intent(Settings.ACTION_SETTINGS))
-            else -> Apps.byKey(k.removePrefix("app:"))?.let { Apps.launch(this, it) } ?: toast("האפליקציה לא נמצאה")
+        clockTv = c
+        mid.addView(c, lp(WRAP, WRAP))
+        mid.addView(View(this), lp(0, 1, 1f))
+        val dates = vbox().apply { gravity = Gravity.END }
+        val h = label("", 20f, pal.heroText, true).oneLine().apply { gravity = Gravity.END }
+        val gr = label("", 13.5f, pal.heroSub).oneLine().apply { gravity = Gravity.END }
+        hebTv = h; gregTv = gr
+        dates.addView(h, lp(WRAP, WRAP))
+        dates.addView(gr, lp(WRAP, WRAP))
+        mid.addView(dates, lp(WRAP, WRAP).m(dp(10), 0, 0, dp(8)))
+        hero.addView(mid, lp(MATCH, WRAP).m(0, dp(2), 0, 0))
+        val ev = label("", 13.5f, pal.heroText, true).apply {
+            background = roundBg(if (Color.red(pal.heroText) > 128) 0x33FFFFFF else 0x1A000000, dp(12).toFloat())
+            setPadding(dp(12), dp(4), dp(12), dp(5))
+            visibility = View.GONE
         }
-    }
-
-    fun dockMenu() {
-        val opts = Dock.builtIn + Apps.everything().map { "app:" + it.key to "אפליקציה: " + Apps.name(it) }
-        Sheet.multi(this, "מה יופיע בשורה התחתונה", opts, Dock.items(), 6) { sel ->
-            Dock.save(sel); renderDock()
-        }
-    }
-
-    /* ------------------------------------------------------------ data */
-
-    private fun refreshAll() {
-        updateClock()
-        renderBanner()
-        reloadApps()
-        renderGadgets()
-        renderFolders()
-        renderBooks()
-        renderDock()
-    }
-
-    private fun reloadApps() {
-        Thread {
-            Apps.load(this)
-            runOnUiThread { apps = Apps.ordered(); renderApps(); renderDock() }
-        }.start()
+        eventTv = ev
+        val evWrap = hbox().apply { addView(ev, lp(WRAP, WRAP)) }
+        hero.addView(evWrap, lp(MATCH, WRAP).m(0, dp(8), 0, 0))
+        return hero
     }
 
     private fun greeting(): String {
-        val h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return when (h) {
+        return when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
             in 5..11 -> "בוקר טוב"
             in 12..16 -> "צהריים טובים"
             in 17..20 -> "ערב טוב"
@@ -377,22 +435,31 @@ class HomeActivity : BaseActivity() {
     private fun updateClock() {
         val now = System.currentTimeMillis()
         val h = Heb.of(now)
-        clock.visibility = if (Prefs.b("showClock", true)) View.VISIBLE else View.GONE
-        clock.text = SimpleDateFormat("HH:mm", Locale.US).format(Date(now))
-        greetTv.text = greeting() + " · יום " + Heb.dayNames[h.dow]
-        gregTv.visibility = if (Prefs.b("showGreg", true)) View.VISIBLE else View.GONE
-        gregTv.text = SimpleDateFormat("d בMMMM yyyy", Locale("he")).format(Date(now))
-        hebTv.visibility = if (Prefs.b("showHeb", true)) View.VISIBLE else View.GONE
-        hebTv.text = Heb.format(h)
-        val ev = ArrayList(Heb.events(h))
-        if (h.dow == Heb.SAT) ev.add(0, "שבת שלום")
-        val om = Heb.omer(h)
-        if (om > 0) ev.add("${Heb.gem(om)} לעומר")
-        if (Prefs.b("showEvents", true) && ev.isNotEmpty()) {
-            eventTv.text = ev.joinToString(" · ")
-            eventTv.visibility = View.VISIBLE
-        } else eventTv.visibility = View.GONE
-        // status strip
+        val time = SimpleDateFormat("HH:mm", Locale.US).format(Date(now))
+        clockTv?.let {
+            it.visibility = if (Prefs.b("showClock", true)) View.VISIBLE else View.GONE
+            it.text = time
+        }
+        greetTv?.text = greeting() + " · יום " + Heb.dayNames[h.dow]
+        gregTv?.let {
+            it.visibility = if (Prefs.b("showGreg", true)) View.VISIBLE else View.GONE
+            it.text = SimpleDateFormat("d בMMMM yyyy", Locale("he")).format(Date(now))
+        }
+        hebTv?.let {
+            it.visibility = if (Prefs.b("showHeb", true)) View.VISIBLE else View.GONE
+            it.text = Heb.format(h)
+        }
+        eventTv?.let { evTv ->
+            val ev = ArrayList(Heb.events(h))
+            if (h.dow == Heb.SAT) ev.add(0, "שבת שלום")
+            val om = Heb.omer(h)
+            if (om > 0) ev.add("${Heb.gem(om)} לעומר")
+            if (Prefs.b("showEvents", true) && ev.isNotEmpty()) {
+                evTv.text = ev.joinToString(" · ")
+                evTv.visibility = View.VISIBLE
+            } else evTv.visibility = View.GONE
+        }
+        for (b in bigClocks) b.text = time
         val bat = batteryLevel()
         statusBat.text = if (bat >= 0) "$bat%" else ""
         statusBatIcon.setImageDrawable(Glyph("battery", pal.text).apply { fill = if (bat >= 0) bat / 100f else 1f })
@@ -435,108 +502,79 @@ class HomeActivity : BaseActivity() {
         banner.addView(c, lp(MATCH, WRAP))
     }
 
-    /* ------------------------------------------------------------ books */
+    /* ------------------------------------------------------------ apps */
 
-    private fun renderBooks() {
-        val show = Prefs.b("showBooks", true)
-        booksSection.visibility = if (show) View.VISIBLE else View.GONE
-        if (!show) return
-        if (!hasFiles()) {
-            drawBooks(emptyList(), "לאחר אישור גישה לקבצים יופיעו כאן הספרים")
-            return
-        }
-        drawBooks(Books.recent(4), null)
+    private fun reloadApps() {
         Thread {
-            Books.scan()
-            val r = Books.recent(4)
-            runOnUiThread { drawBooks(r, if (r.isEmpty()) "לא נמצאו עדיין ספרים במכשיר או בכרטיס הזיכרון" else null) }
+            Apps.load(this)
+            val o = Apps.ordered()
+            runOnUiThread {
+                val changed = o.map { it.key } != apps.map { it.key }
+                apps = o
+                if (changed) renderPage()
+                renderDock()
+            }
         }.start()
     }
 
-    private fun drawBooks(list: List<File>, emptyMsg: String?) {
-        booksRow.removeAllViews()
-        for (i in 0 until 4) {
-            val f = list.getOrNull(i)
-            val cell = vbox()
-            val sq = SquareFrame(this).apply {
-                background = roundBg(if (pal.pastel && f == null) pal.tile(i) else pal.card, dp(14).toFloat(), if (pal.vivid) 0 else dp(1), pal.line)
-                clipToOutline = true
-                if (pal.vivid) elevation = dp(3).toFloat()
+    private fun appsBlock(ui: Int, onLong: () -> Unit): View {
+        val box = vbox()
+        box.addView(sectionTitle("grid", "אפליקציות", "הכול", onLong) { go(Intent(this, AppsActivity::class.java)) })
+        val area = FrameLayout(this)
+        area.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
+            if (b - t != ob - ot) area.post {
+                val shown = fillApps(area, 0)
+                if (baseShown[ui] != shown) { baseShown[ui] = shown; computeRefs(); renderDots() }
             }
-            if (f != null) {
-                val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-                sq.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
-                Covers.load(this, f, iv)
-                if (i == 0) {
-                    val tag = label("ממשיכים", 10.5f, pal.onInk, true).apply {
-                        background = roundBg(pal.ink, dp(8).toFloat())
-                        setPadding(dp(7), dp(2), dp(7), dp(3))
-                    }
-                    sq.addView(tag, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
-                        setMargins(dp(6), 0, dp(6), dp(6))
-                    })
-                }
-                sq.setOnClickListener { Store.open(this, f) }
-                sq.setOnLongClickListener { bookMenu(f); true }
-            } else {
-                val g = ImageView(this).apply { setImageDrawable(Glyph("book", if (pal.pastel) pal.ink else pal.line)) }
-                sq.addView(g, FrameLayout.LayoutParams(dp(34), dp(34), Gravity.CENTER))
-                if (emptyMsg != null && !hasFiles()) sq.setOnClickListener { askFiles() }
-            }
-            cell.addView(sq, lp(MATCH, WRAP))
-            cell.addView(label(f?.nameWithoutExtension ?: "", 12f, pal.text).oneLine().apply { setPadding(dp(2), dp(5), dp(2), 0) })
-            booksRow.addView(cell, lp(0, WRAP, 1f).m(if (i == 0) 0 else dp(5), 0, if (i == 3) 0 else dp(5), 0))
         }
-        booksSection.findViewWithTag<View>("bmsg")?.let { booksSection.removeView(it) }
-        if (emptyMsg != null && list.isEmpty()) {
-            booksSection.addView(label(emptyMsg, 13f, pal.sub).apply { tag = "bmsg" })
+        box.addView(area, lp(MATCH, 0, 1f))
+        return box
+    }
+
+    private fun appsOnlyPage(offset: Int): View {
+        val box = vbox().apply {
+            isLongClickable = true
+            setOnLongClickListener { homeMenu(); true }
         }
+        val head = hbox().apply { setPadding(0, dp(10), 0, dp(6)) }
+        head.addView(label("אפליקציות", 17f, pal.text, true), lp(0, WRAP, 1f))
+        head.addView(label("${offset + 1}–${minOf(apps.size, offset + fullPer)} מתוך ${apps.size}", 13f, pal.sub, true))
+        box.addView(head, lp(MATCH, WRAP))
+        val area = FrameLayout(this)
+        area.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
+            if (b - t != ob - ot) area.post { fillApps(area, offset) }
+        }
+        box.addView(area, lp(MATCH, 0, 1f))
+        return box
     }
 
-    private fun bookMenu(f: File) {
-        Sheet.actions(this, f.nameWithoutExtension, listOf(
-            Sheet.Item("פתיחה") { Store.open(this, f) },
-            Sheet.Item("פתיחה באמצעות…") { Store.open(this, f, chooser = true) },
-            Sheet.Item("הצגה בתיקייה") {
-                go(Intent(this, FilesActivity::class.java).putExtra("path", f.parent))
-            },
-            Sheet.Item("כל הספרים") { go(Intent(this, BooksActivity::class.java)) }
-        ))
-    }
-
-    /* ------------------------------------------------------------ apps */
-
-    private fun cellHeight(): Int {
-        val labels = Prefs.b("labels", true)
-        return dp(if (labels) (60 + 30 * Look.scale()).toInt() else 76)
-    }
-
-    private fun renderApps() {
-        val h = appsBox.height
-        if (h <= 0) return
+    /** Fills a grid with as many apps as fit; returns how many were shown. */
+    private fun fillApps(area: FrameLayout, offset: Int): Int {
+        val h = area.height
+        if (h <= 0) return 0
+        area.removeAllViews()
+        if (apps.isEmpty()) {
+            area.addView(label("טוען אפליקציות…", 15f, pal.sub).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(MATCH, MATCH))
+            return 0
+        }
         val cols = Prefs.i("cols", 4)
         val rows = maxOf(1, h / cellHeight())
-        val per = rows * cols
-        pages = maxOf(1, (apps.size + per - 1) / per)
-        page = page.coerceIn(0, pages - 1)
-        appsBox.removeAllViews()
-        val grid = vbox()
         val iconSize = if (cols >= 5) 50 else if (cols == 3) 64 else 56
+        val grid = vbox()
+        var shown = 0
         for (r in 0 until rows) {
             val row = hbox().apply { gravity = Gravity.TOP }
             for (c in 0 until cols) {
-                val idx = page * per + r * cols + c
+                val idx = offset + r * cols + c
                 val a = apps.getOrNull(idx)
                 if (a == null) { row.addView(View(this), lp(0, MATCH, 1f)); continue }
                 row.addView(appCell(a, idx, iconSize), lp(0, MATCH, 1f))
+                shown++
             }
             grid.addView(row, lp(MATCH, 0, 1f))
         }
-        if (apps.isEmpty()) {
-            appsBox.addView(label("טוען אפליקציות…", 15f, pal.sub).apply { gravity = Gravity.CENTER },
-                FrameLayout.LayoutParams(MATCH, MATCH))
-        } else appsBox.addView(grid, FrameLayout.LayoutParams(MATCH, MATCH))
-        renderIndicator()
+        area.addView(grid, FrameLayout.LayoutParams(MATCH, MATCH))
+        return shown
     }
 
     private fun appCell(a: AppEntry, idx: Int, iconSize: Int): View {
@@ -556,34 +594,6 @@ class HomeActivity : BaseActivity() {
         return v
     }
 
-    private fun renderIndicator() {
-        pageInd.removeAllViews()
-        if (pages <= 1) { pageInd.visibility = View.GONE; return }
-        pageInd.visibility = View.VISIBLE
-        val prev = hbox().apply {
-            addView(glyphView("chev_r", if (page > 0) pal.ink else pal.line, 20))
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            background = pressBg(Color.TRANSPARENT, pal.card2, 14)
-            setOnClickListener { if (page > 0) { page--; renderApps() } }
-        }
-        pageInd.addView(prev)
-        for (i in 0 until pages) {
-            val dot = View(this).apply {
-                background = if (i == page) roundBg(pal.ink, dp(4).toFloat())
-                else roundBg(Color.TRANSPARENT, dp(4).toFloat(), dp(1), pal.sub)
-            }
-            pageInd.addView(dot, lp(dp(if (i == page) 18 else 8), dp(8)).m(dp(3), 0, dp(3), 0))
-        }
-        pageInd.addView(label("  ${page + 1}/$pages", 13f, pal.sub, true))
-        val next = hbox().apply {
-            addView(glyphView("chev_l", if (page < pages - 1) pal.ink else pal.line, 20))
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            background = pressBg(Color.TRANSPARENT, pal.card2, 14)
-            setOnClickListener { if (page < pages - 1) { page++; renderApps() } }
-        }
-        pageInd.addView(next)
-    }
-
     private fun moveApp(a: AppEntry, to: Int) {
         val l = apps.toMutableList()
         val from = l.indexOfFirst { it.key == a.key }
@@ -592,7 +602,7 @@ class HomeActivity : BaseActivity() {
         l.add(to.coerceIn(0, l.size), a)
         Apps.saveOrder(l)
         apps = l
-        renderApps()
+        renderPage()
     }
 
     private fun appMenu(a: AppEntry) {
@@ -601,7 +611,7 @@ class HomeActivity : BaseActivity() {
             Sheet.Item("שינוי שם") {
                 Sheet.input(this, "שם חדש למסך הבית", Apps.name(a), a.label) { s ->
                     Prefs.put("name:" + a.key, if (s.isEmpty() || s == a.label) null else s)
-                    apps = Apps.ordered(); renderApps()
+                    apps = Apps.ordered(); renderPage(); renderDock()
                 }
             },
             Sheet.Item("שינוי סמל") { iconMenu(a) },
@@ -611,7 +621,7 @@ class HomeActivity : BaseActivity() {
             Sheet.Item("העברה לסוף") { moveApp(a, apps.size) },
             Sheet.Item("הוספה לשורה התחתונה") { Dock.addApp(a.key); renderDock() },
             Sheet.Item("הסרה ממסך הבית") {
-                Apps.hide(a); apps = Apps.ordered(); renderApps()
+                Apps.hide(a); apps = Apps.ordered(); renderPage()
                 toast("אפשר להחזיר מ'כל האפליקציות' או מההגדרות")
             },
             Sheet.Item("מידע על האפליקציה") {
@@ -625,7 +635,7 @@ class HomeActivity : BaseActivity() {
 
     private fun iconMenu(a: AppEntry) {
         fun set(v: String?) {
-            Prefs.put("icon:" + a.key, v); renderApps(); renderDock()
+            Prefs.put("icon:" + a.key, v); renderPage(); renderDock()
         }
         Sheet.actions(this, "סמל עבור " + Apps.name(a), listOf(
             Sheet.Item("סמל מקורי") { set(null) },
@@ -644,70 +654,387 @@ class HomeActivity : BaseActivity() {
         ))
     }
 
-    /* ------------------------------------------------------------ home menu */
+    /* ------------------------------------------------------------ books */
 
-    private fun homeMenu() {
-        Sheet.actions(this, "מסך הבית", listOf(
-            Sheet.Item("הוספת גאדג׳ט") { gadgetPicker() },
-            Sheet.Item("ניהול גאדג׳טים") { gadgetMenu() },
-            Sheet.Item("ערכת צבעים") {
-                Sheet.choice(this, "ערכת צבעים", listOf(
-                    "bw" to "שחור‑לבן", "vivid" to "חי וצבעוני", "pastel" to "פסטל", "night" to "לילה"
-                ), Look.theme) { v -> Prefs.put("theme", v); Apps.clearIcons(); recreate() }
-            },
-            Sheet.Item("שורה תחתונה") { dockMenu() },
-            Sheet.Item("אפליקציות במסך הבית") { go(Intent(this, AppsActivity::class.java).putExtra("manage", true)) },
-            Sheet.Item("הגדרות") { go(Intent(this, SettingsActivity::class.java)) }
+    private fun scanBooks() {
+        if (!hasFiles()) return
+        Thread {
+            Books.scan()
+            val n = Books.cache.size
+            runOnUiThread {
+                if (n != lastBookCount) {
+                    lastBookCount = n
+                    if (userPages.getOrNull(curUser())?.any { it == "books" || it == "g:book" } == true) renderPage()
+                }
+            }
+        }.start()
+    }
+
+    private fun booksBlock(flex: Boolean, onLong: () -> Unit): View {
+        val box = vbox()
+        box.addView(sectionTitle("book", "ספרים אחרונים", "הכול", onLong) { go(Intent(this, BooksActivity::class.java)) })
+        if (!hasFiles()) {
+            box.addView(pillButton("אישור גישה לקבצים כדי להציג ספרים", filled = false) { askFiles() }.apply { setTextSize(14f) })
+            return box
+        }
+        if (!flex) {
+            val grid = vbox()
+            drawBookRows(grid, 1)
+            box.addView(grid, lp(MATCH, WRAP))
+            return box
+        }
+        val area = FrameLayout(this)
+        area.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, orr, ob ->
+            if (b - t != ob - ot || r - l != orr - ol) area.post {
+                val w = area.width
+                val rowH = (w - dp(30)) / 4 + dp(26)
+                val rows = maxOf(1, area.height / maxOf(1, rowH))
+                area.removeAllViews()
+                val grid = vbox()
+                drawBookRows(grid, rows)
+                area.addView(grid, FrameLayout.LayoutParams(MATCH, FrameLayout.LayoutParams.WRAP_CONTENT))
+            }
+        }
+        box.addView(area, lp(MATCH, 0, 1f))
+        return box
+    }
+
+    private fun drawBookRows(target: LinearLayout, rows: Int) {
+        val list = Books.recent(rows * 4)
+        if (list.isEmpty()) {
+            target.addView(label("לא נמצאו עדיין ספרים במכשיר או בכרטיס הזיכרון", 13f, pal.sub))
+            return
+        }
+        for (r in 0 until rows) {
+            val row = hbox().apply { gravity = Gravity.TOP }
+            for (i in 0 until 4) {
+                val idx = r * 4 + i
+                val f = list.getOrNull(idx)
+                val cell = vbox()
+                if (f != null) {
+                    val sq = SquareFrame(this).apply {
+                        background = roundBg(pal.card, dp(14).toFloat(), if (pal.vivid) 0 else dp(1), pal.line)
+                        clipToOutline = true
+                        if (pal.vivid) elevation = dp(3).toFloat()
+                    }
+                    val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+                    sq.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
+                    Covers.load(this, f, iv)
+                    if (idx == 0) {
+                        val tag = label("ממשיכים", 10.5f, pal.onInk, true).apply {
+                            background = roundBg(pal.ink, dp(8).toFloat())
+                            setPadding(dp(7), dp(2), dp(7), dp(3))
+                        }
+                        sq.addView(tag, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+                            setMargins(dp(6), 0, dp(6), dp(6))
+                        })
+                    }
+                    sq.setOnClickListener { Store.open(this, f) }
+                    sq.setOnLongClickListener { bookMenu(f); true }
+                    cell.addView(sq, lp(MATCH, WRAP))
+                    cell.addView(label(f.nameWithoutExtension, 12f, pal.text).oneLine().apply { setPadding(dp(2), dp(5), dp(2), 0) })
+                }
+                row.addView(cell, lp(0, WRAP, 1f).m(if (i == 0) 0 else dp(5), 0, if (i == 3) 0 else dp(5), 0))
+            }
+            target.addView(row, lp(MATCH, WRAP).m(0, if (r == 0) 0 else dp(8), 0, 0))
+        }
+    }
+
+    private fun bookMenu(f: File) {
+        Sheet.actions(this, f.nameWithoutExtension, listOf(
+            Sheet.Item("פתיחה") { Store.open(this, f) },
+            Sheet.Item("פתיחה באמצעות…") { Store.open(this, f, chooser = true) },
+            Sheet.Item("הצגה בתיקייה") { go(Intent(this, FilesActivity::class.java).putExtra("path", f.parent)) },
+            Sheet.Item("שמירה בשורה התחתונה") { Dock.setSlot(Dock.items().indexOf("empty").let { if (it < 0) Dock.items().size else it }, "book:" + f.path); renderDock() },
+            Sheet.Item("כל הספרים") { go(Intent(this, BooksActivity::class.java)) }
         ))
     }
 
-    /* ------------------------------------------------------------ gadgets */
+    /* ------------------------------------------------------------ folders */
 
-    private fun gadgetList(): MutableList<String> = Prefs.list("gadgets")
-
-    private fun addGadget(k: String) {
-        val l = gadgetList(); if (k !in l) l.add(k); Prefs.putList("gadgets", l); renderGadgets()
+    private fun foldersBlock(onLong: () -> Unit): View {
+        val box = vbox()
+        box.addView(sectionTitle("folder", "תיקיות", "הוספה", onLong) { pickFolder() })
+        val row = hbox()
+        val all = Store.homeFolders()
+        val visible = if (all.size > 4) all.take(3) else all
+        visible.forEachIndexed { i, path -> row.addView(folderTile(path, i), lp(0, WRAP, 1f).m(dp(4), 0, dp(4), 0)) }
+        if (all.size > 4) {
+            row.addView(tile("dots", "עוד ${all.size - 3}", 3) { moreFolders(all) }, lp(0, WRAP, 1f).m(dp(4), 0, dp(4), 0))
+        } else if (all.size < 4) {
+            row.addView(tile("plus", "הוספה", all.size) { pickFolder() }, lp(0, WRAP, 1f).m(dp(4), 0, dp(4), 0))
+            for (x in all.size + 1 until 4) row.addView(View(this), lp(0, 1, 1f).m(dp(4), 0, dp(4), 0))
+        }
+        box.addView(row, lp(MATCH, WRAP))
+        return box
     }
 
-    private fun removeGadget(k: String) {
-        val l = gadgetList(); l.remove(k); Prefs.putList("gadgets", l)
+    private fun tile(kind: String, text: String, i: Int, onClick: () -> Unit): LinearLayout = vbox().apply {
+        gravity = Gravity.CENTER
+        setPadding(dp(4), dp(10), dp(4), dp(8))
+        val bgc = if (pal.pastel) pal.tile(i + 2) else pal.card
+        background = pressBg(bgc, pal.card2, 16)
+        if (pal.vivid) elevation = dp(2).toFloat()
+        addView(glyphView(kind, pal.ink, 28))
+        addView(label(text, 12.5f, pal.text, pal.vivid).oneLine().apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0) }, lp(MATCH, WRAP))
+        setOnClickListener { onClick() }
+    }
+
+    private fun openFolder(path: String) {
+        val isVol = Store.isVolumeRoot(path) && path != Store.root().path
+        if (isVol) go(Intent(this, FilesActivity::class.java).putExtra("volume", path))
+        else go(Intent(this, FilesActivity::class.java).putExtra("path", path))
+    }
+
+    private fun folderTile(path: String, i: Int): View {
+        val isVol = Store.isVolumeRoot(path) && path != Store.root().path
+        val t = tile(if (isVol) "sd" else "folder", Store.folderName(path), i) { openFolder(path) }
+        t.setOnLongClickListener { folderMenu(path); true }
+        return t
+    }
+
+    private fun folderMenu(path: String) {
+        Sheet.actions(this, Store.folderName(path), listOf(
+            Sheet.Item("פתיחה") { openFolder(path) },
+            Sheet.Item("שינוי שם") {
+                Sheet.input(this, "שם התיקייה במסך הבית", Store.folderName(path), File(path).name) { s ->
+                    Prefs.put("fname:$path", if (s.isEmpty()) null else s); renderPage()
+                }
+            },
+            Sheet.Item("שמירה בשורה התחתונה") {
+                Dock.setSlot(Dock.items().indexOf("empty").let { if (it < 0) Dock.items().size else it }, "folder:$path"); renderDock()
+            },
+            Sheet.Item("הסרה ממסך הבית", red = true) { Store.removeHomeFolder(path); renderPage() }
+        ))
+    }
+
+    private fun moreFolders(all: List<String>) {
+        Sheet.actions(this, "תיקיות", all.map { p ->
+            Sheet.Item(Store.folderName(p)) { openFolder(p) }
+        } + Sheet.Item("הוספת תיקייה…") { pickFolder() })
+    }
+
+    private fun pickFolder() {
+        if (!hasFiles()) { askFiles(); return }
+        go(Intent(this, FilesActivity::class.java).putExtra("pick", true))
+    }
+
+    /* ------------------------------------------------------------ dock */
+
+    private fun renderDock() {
+        dockBox.removeAllViews()
+        val keys = Dock.items()
+        if (keys.isEmpty() || !Prefs.b("dockOn", true)) { dockBox.visibility = View.GONE; return }
+        dockBox.visibility = View.VISIBLE
+        val d = hbox().apply {
+            background = roundBg(pal.dockBg, dp(30).toFloat(), if (pal.dockBg == pal.card && !pal.night) dp(1) else 0, pal.line)
+            if (pal.vivid) elevation = dp(6).toFloat()
+            setPadding(dp(6), dp(9), dp(6), dp(9))
+            isLongClickable = true
+            setOnLongClickListener { DockEditor.open(this@HomeActivity) { renderDock() }; true }
+        }
+        keys.forEachIndexed { i, k ->
+            if (k == "empty") { d.addView(View(this), lp(0, dp(10), 1f)); return@forEachIndexed }
+            val v = vbox().apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(3), 0, dp(3))
+                background = pressBg(Color.TRANSPARENT, if (Color.red(pal.dockBg) > 200) pal.card2 else 0x33FFFFFF, 20)
+            }
+            when {
+                k.startsWith("app:") -> {
+                    val a = Apps.byKey(k.removePrefix("app:"))
+                    if (a != null) v.addView(Apps.iconView(this, a, 32, pal, i), lp(dp(32), dp(32)))
+                    else v.addView(glyphView("dots", pal.dockFg, 30))
+                }
+                k.startsWith("book:") -> {
+                    val sq = FrameLayout(this).apply { background = roundBg(pal.card, dp(8).toFloat()); clipToOutline = true }
+                    val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+                    sq.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
+                    val f = File(k.removePrefix("book:"))
+                    if (f.exists()) Covers.load(this, f, iv) else iv.setImageDrawable(Glyph("book", pal.ink))
+                    v.addView(sq, lp(dp(32), dp(32)))
+                }
+                else -> v.addView(glyphView(Dock.glyph(k), pal.dockFg, 30))
+            }
+            v.addView(label(Dock.shortLabel(k), 12f, pal.dockFg, true).oneLine().apply { gravity = Gravity.CENTER; setPadding(dp(2), dp(3), dp(2), 0) }, lp(MATCH, WRAP))
+            v.setOnClickListener { dockAction(k) }
+            v.setOnLongClickListener { DockEditor.slot(this@HomeActivity, i) { renderDock() }; true }
+            d.addView(v, lp(0, WRAP, 1f))
+        }
+        dockBox.addView(d, FrameLayout.LayoutParams(MATCH, FrameLayout.LayoutParams.WRAP_CONTENT))
+    }
+
+    private fun dockAction(k: String) {
+        when {
+            k.startsWith("app:") -> Apps.byKey(k.removePrefix("app:"))?.let { Apps.launch(this, it) } ?: toast("האפליקציה לא נמצאה")
+            k.startsWith("folder:") -> openFolder(k.removePrefix("folder:"))
+            k.startsWith("book:") -> {
+                val f = File(k.removePrefix("book:"))
+                if (f.exists()) Store.open(this, f) else toast("הספר לא נמצא")
+            }
+            else -> when (k) {
+                "wifi" -> openWifi()
+                "files" -> go(Intent(this, FilesActivity::class.java))
+                "books" -> go(Intent(this, BooksActivity::class.java))
+                "settings" -> go(Intent(this, SettingsActivity::class.java))
+                "apps" -> go(Intent(this, AppsActivity::class.java))
+                "calendar" -> go(Intent(this, CalendarActivity::class.java))
+                "control" -> showPanel()
+                "refresh" -> einkRefresh()
+                "bt" -> go(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                "addwin" -> newPage()
+                "sd" -> {
+                    val sd = Store.volumes().firstOrNull { it.removable }
+                    if (sd == null) toast("לא זוהה כרטיס זיכרון")
+                    else go(Intent(this, FilesActivity::class.java).putExtra("volume", sd.dir.path))
+                }
+                "android" -> go(Intent(Settings.ACTION_SETTINGS))
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------ windows & blocks */
+
+    private fun homeMenu() {
+        val ui = curUser()
+        val items = ArrayList<Sheet.Item>()
+        items.add(Sheet.Item("הוספת רכיב לחלון הזה") { addBlockMenu(ui) })
+        items.add(Sheet.Item("חלון חדש") { newPage() })
+        if (userPages.size > 1) {
+            if (ui > 0) items.add(Sheet.Item("הזזת החלון ימינה") { swapPages(ui, ui - 1) })
+            if (ui < userPages.size - 1) items.add(Sheet.Item("הזזת החלון שמאלה") { swapPages(ui, ui + 1) })
+            items.add(Sheet.Item("סגירת החלון הזה", red = true) { closePage(ui) })
+        }
+        items.add(Sheet.Item("ערכת נושא") { themeMenu() })
+        items.add(Sheet.Item("השורה התחתונה") { DockEditor.open(this) { renderDock() } })
+        items.add(Sheet.Item("אילו אפליקציות יופיעו") { go(Intent(this, AppsActivity::class.java).putExtra("manage", true)) })
+        items.add(Sheet.Item("הגדרות") { go(Intent(this, SettingsActivity::class.java)) })
+        Sheet.actions(this, "חלון ${ui + 1} מתוך ${userPages.size}", items)
+    }
+
+    private fun themeMenu() {
+        Sheet.choice(this, "ערכת נושא", Look.themes, Look.theme) { v ->
+            Prefs.put("theme", v); Apps.clearIcons()
+            if (v == "custom") ThemeEditor.open(this) { recreate() } else recreate()
+        }
+    }
+
+    private fun newPage() {
+        val ui = curUser()
+        userPages.add(ui + 1, mutableListOf())
+        savePages()
+        goToUserPage(ui + 1)
+        toast("נפתח חלון חדש")
+    }
+
+    private fun swapPages(a: Int, b: Int) {
+        val t = userPages[a]; userPages[a] = userPages[b]; userPages[b] = t
+        savePages(); goToUserPage(b)
+    }
+
+    private fun closePage(ui: Int) {
+        Sheet.confirm(this, "סגירת החלון", "החלון ייסגר והרכיבים שבו יוסרו. אם יש בו אפליקציות או שעון, הם יועברו לחלון הראשון.", "סגירה") {
+            val blocks = userPages[ui]
+            userPages.removeAt(ui)
+            if (userPages.isEmpty()) userPages.add(mutableListOf())
+            for (k in blocks) {
+                if (k == "apps" || k == "hero") { if (Pages.pageOf(userPages, k) < 0) userPages[0].add(if (k == "hero") 0 else userPages[0].size, k) }
+                else if (k.startsWith("w:")) deleteWidget(k)
+            }
+            savePages(); cur = 0; renderPage()
+        }
+    }
+
+    private fun deleteWidget(k: String) {
+        val id = k.removePrefix("w:").toIntOrNull() ?: return
+        try { host.deleteAppWidgetId(id) } catch (e: Exception) { ignore(e) }
+        widgetViews.remove(id)
+    }
+
+    private fun addBlock(ui: Int, k: String) {
+        val u = ui.coerceIn(0, userPages.size - 1)
+        val existing = Pages.pageOf(userPages, k)
+        if (existing >= 0 && !k.startsWith("w:")) { userPages[existing].remove(k) }
+        if (k == "hero") userPages[u].add(0, k) else userPages[u].add(k)
+        savePages()
+        goToUserPage(u)
+    }
+
+    private fun addBlockMenu(ui: Int) {
+        val items = ArrayList<Sheet.Item>()
+        for ((k, n) in Pages.coreBlocks + Pages.gadgetBlocks) {
+            val where = Pages.pageOf(userPages, k)
+            val suffix = if (where == ui) " (כבר כאן)" else if (where >= 0) " (מחלון ${where + 1})" else ""
+            if (where == ui) continue
+            items.add(Sheet.Item(n + suffix) { addBlock(ui, k) })
+        }
+        items.add(Sheet.Item("גאדג׳ט של אפליקציה…") { widgetPicker(ui) })
+        Sheet.actions(this, "הוספה לחלון ${ui + 1}", items)
+    }
+
+    private fun blockMenu(k: String, ui: Int, bi: Int) {
+        val blocks = userPages[ui]
+        val items = ArrayList<Sheet.Item>()
+        if (bi > 0) items.add(Sheet.Item("הזזה למעלה") { blocks.removeAt(bi); blocks.add(bi - 1, k); savePages(); renderPage() })
+        if (bi < blocks.size - 1) items.add(Sheet.Item("הזזה למטה") { blocks.removeAt(bi); blocks.add(bi + 1, k); savePages(); renderPage() })
+        items.add(Sheet.Item("העברה לחלון אחר…") { moveBlockMenu(k, ui) })
+        if (k == "g:note") items.add(Sheet.Item("עריכת הפתק") { editNote() })
+        if (k == "books") items.add(Sheet.Item("כל הספרים") { go(Intent(this, BooksActivity::class.java)) })
+        if (k == "apps") items.add(Sheet.Item("אילו אפליקציות יופיעו") { go(Intent(this, AppsActivity::class.java).putExtra("manage", true)) })
+        items.add(Sheet.Item("הסרה מהחלון", red = true) {
+            blocks.remove(k)
+            if (k.startsWith("w:")) deleteWidget(k)
+            savePages(); renderPage()
+        })
+        Sheet.actions(this, blockName(k), items)
+    }
+
+    private fun moveBlockMenu(k: String, ui: Int) {
+        val items = ArrayList<Sheet.Item>()
+        for (i in userPages.indices) {
+            if (i == ui) continue
+            items.add(Sheet.Item("חלון ${i + 1}" + if (userPages[i].isEmpty()) " (ריק)" else "") { moveBlock(k, ui, i) })
+        }
+        items.add(Sheet.Item("חלון חדש") {
+            userPages.add(mutableListOf()); moveBlock(k, ui, userPages.size - 1)
+        })
+        Sheet.actions(this, "להעביר את \"${blockName(k)}\" אל", items)
+    }
+
+    private fun moveBlock(k: String, from: Int, to: Int) {
+        userPages[from].remove(k)
+        if (k == "hero") userPages[to].add(0, k) else userPages[to].add(k)
+        savePages()
+        goToUserPage(to)
+    }
+
+    private fun blockName(k: String): String {
         if (k.startsWith("w:")) {
             val id = k.removePrefix("w:").toIntOrNull()
-            if (id != null) { try { host.deleteAppWidgetId(id) } catch (e: Exception) { ignore(e) }; widgetViews.remove(id) }
+            return id?.let { awm.getAppWidgetInfo(it) }?.loadLabel(packageManager) ?: "גאדג׳ט"
         }
-        renderGadgets()
+        return Pages.name(k)
     }
 
-    private fun gadgetName(k: String): String = when (k) {
-        "g:calendar" -> "לוח חודשי"
-        "g:battery" -> "סוללה ואחסון"
-        "g:note" -> "פתק"
-        "g:book" -> "הספר שאני קורא"
-        "g:clock" -> "שעון ענק"
-        else -> {
-            val id = k.removePrefix("w:").toIntOrNull()
-            val info = id?.let { awm.getAppWidgetInfo(it) }
-            info?.loadLabel(packageManager) ?: "גאדג׳ט"
-        }
-    }
+    /* ------------------------------------------------------------ android widgets */
 
-    private fun gadgetPicker() {
-        val items = ArrayList<Sheet.Item>()
-        val internal = listOf("g:calendar", "g:battery", "g:note", "g:book", "g:clock")
-        for (k in internal) items.add(Sheet.Item("הבוקס · " + gadgetName(k)) { addGadget(k) })
+    private fun widgetPicker(ui: Int) {
         val providers = try { awm.installedProviders } catch (e: Exception) { emptyList<AppWidgetProviderInfo>() }
+        if (providers.isEmpty()) { toast("אין במכשיר גאדג׳טים של אפליקציות"); return }
+        val items = ArrayList<Sheet.Item>()
         for (p in providers.sortedBy { it.loadLabel(packageManager) ?: "" }) {
             val appName = try {
                 packageManager.getApplicationLabel(packageManager.getApplicationInfo(p.provider.packageName, 0)).toString()
             } catch (e: Exception) { p.provider.packageName }
-            items.add(Sheet.Item(appName + " · " + (p.loadLabel(packageManager) ?: ""), false) { addAndroidWidget(p) })
+            items.add(Sheet.Item(appName + " · " + (p.loadLabel(packageManager) ?: "")) { addAndroidWidget(p, ui) })
         }
-        Sheet.actions(this, "בחירת גאדג׳ט", items)
+        Sheet.actions(this, "גאדג׳טים של אפליקציות", items)
     }
 
-    private fun addAndroidWidget(p: AppWidgetProviderInfo) {
+    private fun addAndroidWidget(p: AppWidgetProviderInfo, ui: Int) {
         val id = try { host.allocateAppWidgetId() } catch (e: Exception) { toast("לא ניתן להוסיף גאדג׳ט"); return }
         pendingWidget = id
+        pendingPage = ui
         val ok = try { awm.bindAppWidgetIdIfAllowed(id, p.provider) } catch (e: Exception) { false }
         if (ok) configureWidget(id)
         else {
@@ -731,7 +1058,7 @@ class HomeActivity : BaseActivity() {
                 return
             } catch (e: Exception) { ignore(e) }
         }
-        addGadget("w:$id")
+        addBlock(pendingPage, "w:$id")
     }
 
     @Deprecated("Deprecated in Java")
@@ -742,66 +1069,25 @@ class HomeActivity : BaseActivity() {
         if (requestCode == REQ_BIND) {
             if (resultCode == RESULT_OK) configureWidget(id) else try { host.deleteAppWidgetId(id) } catch (e: Exception) { ignore(e) }
         } else if (requestCode == REQ_CONF) {
-            if (resultCode == RESULT_OK) addGadget("w:$id") else try { host.deleteAppWidgetId(id) } catch (e: Exception) { ignore(e) }
+            if (resultCode == RESULT_OK) addBlock(pendingPage, "w:$id") else try { host.deleteAppWidgetId(id) } catch (e: Exception) { ignore(e) }
         }
     }
 
-    private fun gadgetMenu() {
-        val l = gadgetList()
-        if (l.isEmpty()) {
-            Sheet.confirm(this, "אין עדיין גאדג׳טים", "גאדג׳טים הם חלונות קטנים במסך הבית: לוח שנה, סוללה, פתק, הספר שאתם קוראים או גאדג׳טים של אפליקציות אחרות.", "הוספת גאדג׳ט") { gadgetPicker() }
-            return
-        }
-        val items = ArrayList<Sheet.Item>()
-        items.add(Sheet.Item("הוספת גאדג׳ט…") { gadgetPicker() })
-        l.forEachIndexed { i, k ->
-            items.add(Sheet.Item(gadgetName(k) + " · אפשרויות") { oneGadgetMenu(k, i) })
-        }
-        Sheet.actions(this, "גאדג׳טים במסך הבית", items)
-    }
-
-    private fun oneGadgetMenu(k: String, i: Int) {
-        val l = gadgetList()
-        val items = ArrayList<Sheet.Item>()
-        if (i > 0) items.add(Sheet.Item("הזזה למעלה") { l.removeAt(i); l.add(i - 1, k); Prefs.putList("gadgets", l); renderGadgets() })
-        if (i < l.size - 1) items.add(Sheet.Item("הזזה למטה") { l.removeAt(i); l.add(i + 1, k); Prefs.putList("gadgets", l); renderGadgets() })
-        if (k == "g:note") items.add(Sheet.Item("עריכת הפתק") { editNote() })
-        items.add(Sheet.Item("הסרה ממסך הבית", red = true) { removeGadget(k) })
-        Sheet.actions(this, gadgetName(k), items)
-    }
-
-    private fun gadgetCard(k: String, i: Int): LinearLayout = vbox().apply {
-        background = roundBg(if (pal.pastel && !pal.vivid) pal.tile(i + 4) else pal.card, dp(20).toFloat(),
-            if (pal.vivid || pal.pastel || pal.night) 0 else dp(1), pal.line)
-        if (pal.vivid) elevation = dp(3).toFloat()
-        setPadding(dp(14), dp(12), dp(14), dp(12))
-        setOnLongClickListener { oneGadgetMenu(k, i); true }
-    }
-
-    private fun renderGadgets() {
-        gadgetsBox.removeAllViews()
-        val l = gadgetList()
-        gadgetsBox.visibility = if (l.isEmpty()) View.GONE else View.VISIBLE
-        l.forEachIndexed { i, k ->
-            val v: View? = when (k) {
-                "g:calendar" -> miniCalendar(k, i)
-                "g:battery" -> batteryGadget(k, i)
-                "g:note" -> noteGadget(k, i)
-                "g:book" -> bookGadget(k, i)
-                "g:clock" -> clockGadget(k, i)
-                else -> androidWidget(k)
-            }
-            if (v != null) gadgetsBox.addView(v, lp(MATCH, WRAP).m(0, dp(10), 0, 0))
-        }
-    }
-
-    private fun androidWidget(k: String): View? {
+    private fun androidWidget(k: String, onLong: () -> Unit): View? {
         val id = k.removePrefix("w:").toIntOrNull() ?: return null
         val info = awm.getAppWidgetInfo(id) ?: return null
         val hv = widgetViews[id] ?: try {
-            host.createView(applicationContext, id, info).also { it.setAppWidget(id, info); widgetViews[id] = it }
+            host.createView(applicationContext, id, info).also { widgetViews[id] = it }
         } catch (e: Exception) { return null }
         (hv.parent as? android.view.ViewGroup)?.removeView(hv)
+        val box = vbox()
+        val head = hbox()
+        head.addView(label(blockName(k), 12.5f, pal.sub, true).oneLine(), lp(0, WRAP, 1f))
+        head.addView(FrameLayout(this).apply {
+            addView(ImageView(context).apply { setImageDrawable(Glyph("dots", pal.sub)) }, FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER))
+            setOnClickListener { onLong() }
+        }, lp(dp(30), dp(24)))
+        box.addView(head, lp(MATCH, WRAP))
         val card = FrameLayout(this).apply {
             background = roundBg(pal.card, dp(20).toFloat(), if (pal.night) 0 else dp(1), pal.line)
             setPadding(dp(4), dp(4), dp(4), dp(4))
@@ -809,11 +1095,22 @@ class HomeActivity : BaseActivity() {
         }
         val h = info.minHeight.coerceIn(dp(70), dp(240))
         card.addView(hv, FrameLayout.LayoutParams(MATCH, h))
-        return card
+        box.addView(card, lp(MATCH, WRAP))
+        return box
     }
 
-    private fun miniCalendar(k: String, i: Int): View {
-        val c = gadgetCard(k, i)
+    /* ------------------------------------------------------------ built-in gadgets */
+
+    private fun gadgetCard(i: Int, onLong: () -> Unit): LinearLayout = vbox().apply {
+        background = roundBg(if (pal.pastel && !pal.vivid) pal.tile(i + 4) else pal.card, dp(20).toFloat(),
+            if (pal.vivid || pal.pastel || pal.night) 0 else dp(1), pal.line)
+        if (pal.vivid) elevation = dp(3).toFloat()
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        setOnLongClickListener { onLong(); true }
+    }
+
+    private fun miniCalendar(i: Int, onLong: () -> Unit): View {
+        val c = gadgetCard(i, onLong)
         c.setOnClickListener { go(Intent(this, CalendarActivity::class.java)) }
         val cal = Calendar.getInstance()
         val today = cal.get(Calendar.DAY_OF_MONTH)
@@ -835,9 +1132,10 @@ class HomeActivity : BaseActivity() {
             for (col in 0 until 7) {
                 val idx = w * 7 + col
                 if (idx < offset || day > days) { row.addView(View(this), lp(0, dp(22), 1f)); continue }
-                val t = label(day.toString(), 12.5f, if (day == today) pal.onInk else pal.text, day == today || col == 6).apply {
+                val isToday = day == today
+                val t = label(day.toString(), 12.5f, if (isToday) pal.onInk else pal.text, isToday || col == 6).apply {
                     gravity = Gravity.CENTER
-                    if (day == today) background = roundBg(pal.ink, dp(11).toFloat())
+                    if (isToday) background = roundBg(pal.ink, dp(11).toFloat())
                 }
                 row.addView(t, lp(0, dp(22), 1f).m(dp(3), dp(1), dp(3), dp(1)))
                 day++
@@ -847,8 +1145,8 @@ class HomeActivity : BaseActivity() {
         return c
     }
 
-    private fun batteryGadget(k: String, i: Int): View {
-        val c = gadgetCard(k, i)
+    private fun batteryGadget(i: Int, onLong: () -> Unit): View {
+        val c = gadgetCard(i, onLong)
         val r = hbox()
         val bat = batteryLevel()
         r.addView(ImageView(this).apply { setImageDrawable(Glyph("battery", pal.ink, 1.6f).apply { fill = if (bat >= 0) bat / 100f else 1f }) }, lp(dp(54), dp(54)))
@@ -868,11 +1166,11 @@ class HomeActivity : BaseActivity() {
     }
 
     private fun editNote() {
-        Sheet.input(this, "פתק", Prefs.s("note", ""), "מה לזכור?", multiline = true) { s -> Prefs.put("note", s); renderGadgets() }
+        Sheet.input(this, "פתק", Prefs.s("note", ""), "מה לזכור?", multiline = true) { s -> Prefs.put("note", s); renderPage() }
     }
 
-    private fun noteGadget(k: String, i: Int): View {
-        val c = gadgetCard(k, i)
+    private fun noteGadget(i: Int, onLong: () -> Unit): View {
+        val c = gadgetCard(i, onLong)
         val head = hbox()
         head.addView(glyphView("note", pal.ink, 20))
         head.addView(label("פתק", 15f, pal.text, true), lp(0, WRAP, 1f).m(dp(8), 0, 0, 0))
@@ -885,8 +1183,8 @@ class HomeActivity : BaseActivity() {
         return c
     }
 
-    private fun bookGadget(k: String, i: Int): View {
-        val c = gadgetCard(k, i)
+    private fun bookGadget(i: Int, onLong: () -> Unit): View {
+        val c = gadgetCard(i, onLong)
         val f = Books.recent(1).firstOrNull()
         val r = hbox()
         val sq = SquareFrame(this).apply {
@@ -908,77 +1206,17 @@ class HomeActivity : BaseActivity() {
         return c
     }
 
-    private fun clockGadget(k: String, i: Int): View {
-        val c = gadgetCard(k, i).apply { gravity = Gravity.CENTER_HORIZONTAL }
-        c.addView(TextView(this).apply {
+    private fun clockGadget(i: Int, onLong: () -> Unit): View {
+        val c = gadgetCard(i, onLong).apply { gravity = Gravity.CENTER_HORIZONTAL }
+        val t = TextView(this).apply {
             text = SimpleDateFormat("HH:mm", Locale.US).format(Date())
             textSize = 92f; typeface = Look.heavy; setTextColor(pal.text); includeFontPadding = false
             gravity = Gravity.CENTER
-        }, lp(MATCH, WRAP))
+        }
+        bigClocks.add(t)
+        c.addView(t, lp(MATCH, WRAP))
         c.addView(label(Heb.format(Heb.of(System.currentTimeMillis())), 16f, pal.sub, true).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
         return c
-    }
-
-    /* ------------------------------------------------------------ folders */
-
-    private fun renderFolders() {
-        val show = Prefs.b("showFolders", true)
-        foldersSection.visibility = if (show) View.VISIBLE else View.GONE
-        if (!show) return
-        foldersRow.removeAllViews()
-        val all = Store.homeFolders()
-        val visible = if (all.size > 4) all.take(3) else all
-        visible.forEachIndexed { i, path -> foldersRow.addView(folderTile(path, i), lp(0, WRAP, 1f).m(dp(4), 0, dp(4), 0)) }
-        if (all.size > 4) {
-            foldersRow.addView(tile("dots", "עוד ${all.size - 3}", 3) { moreFolders(all) }, lp(0, WRAP, 1f).m(dp(4), 0, dp(4), 0))
-        } else if (all.size < 4) {
-            foldersRow.addView(tile("plus", "הוספה", all.size) { pickFolder() }, lp(0, WRAP, 1f).m(dp(4), 0, dp(4), 0))
-            for (x in all.size + 1 until 4) foldersRow.addView(View(this), lp(0, 1, 1f).m(dp(4), 0, dp(4), 0))
-        }
-    }
-
-    private fun tile(kind: String, text: String, i: Int, onClick: () -> Unit): LinearLayout = vbox().apply {
-        gravity = Gravity.CENTER
-        setPadding(dp(4), dp(10), dp(4), dp(8))
-        val bgc = if (pal.pastel) pal.tile(i + 2) else pal.card
-        background = pressBg(bgc, pal.card2, 16)
-        if (pal.vivid) elevation = dp(2).toFloat()
-        addView(glyphView(kind, pal.ink, 28))
-        addView(label(text, 12.5f, pal.text, pal.vivid).oneLine().apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0) }, lp(MATCH, WRAP))
-        setOnClickListener { onClick() }
-    }
-
-    private fun folderTile(path: String, i: Int): View {
-        val isVol = Store.isVolumeRoot(path) && path != Store.root().path
-        val t = tile(if (isVol) "sd" else "folder", Store.folderName(path), i) {
-            if (isVol) go(Intent(this, FilesActivity::class.java).putExtra("volume", path))
-            else go(Intent(this, FilesActivity::class.java).putExtra("path", path))
-        }
-        t.setOnLongClickListener { folderMenu(path); true }
-        return t
-    }
-
-    private fun folderMenu(path: String) {
-        Sheet.actions(this, Store.folderName(path), listOf(
-            Sheet.Item("פתיחה") { go(Intent(this, FilesActivity::class.java).putExtra("path", path)) },
-            Sheet.Item("שינוי שם") {
-                Sheet.input(this, "שם התיקייה במסך הבית", Store.folderName(path), File(path).name) { s ->
-                    Prefs.put("fname:$path", if (s.isEmpty()) null else s); renderFolders()
-                }
-            },
-            Sheet.Item("הסרה ממסך הבית", red = true) { Store.removeHomeFolder(path); renderFolders() }
-        ))
-    }
-
-    private fun moreFolders(all: List<String>) {
-        Sheet.actions(this, "תיקיות", all.map { p ->
-            Sheet.Item(Store.folderName(p)) { go(Intent(this, FilesActivity::class.java).putExtra("path", p)) }
-        } + Sheet.Item("הוספת תיקייה…") { pickFolder() })
-    }
-
-    private fun pickFolder() {
-        if (!hasFiles()) { askFiles(); return }
-        go(Intent(this, FilesActivity::class.java).putExtra("pick", true))
     }
 
     /* ------------------------------------------------------------ gestures */
@@ -995,11 +1233,12 @@ class HomeActivity : BaseActivity() {
                 if (dt < 900) {
                     if (panel != null) {
                         if (dy < -th && abs(dy) > abs(dx)) { hidePanel(); handled = true }
-                    } else if (dy > th && abs(dy) > 1.4f * abs(dx) && !inWidget(downX, downY)) {
+                    } else if (dy > th && abs(dy) > 1.4f * abs(dx) && Prefs.b("swipeDown", true)
+                        && downY > dp(90) && !inWidget(downX, downY)) {
                         showPanel(); handled = true
-                    } else if (abs(dx) > th && abs(dx) > 1.4f * abs(dy) && inView(appsBox, downY)) {
-                        if (dx > 0 && page < pages - 1) { page++; renderApps() }
-                        else if (dx < 0 && page > 0) { page--; renderApps() }
+                    } else if (abs(dx) > th && abs(dx) > 1.4f * abs(dy) && !inWidget(downX, downY) && inView(pageHost, downY)) {
+                        if (dx > 0 && cur < refs.size - 1) { cur++; renderPage() }
+                        else if (dx < 0 && cur > 0) { cur--; renderPage() }
                         handled = true
                     }
                 }
@@ -1023,7 +1262,7 @@ class HomeActivity : BaseActivity() {
 
     private fun inWidget(x: Float, y: Float): Boolean {
         for (hv in widgetViews.values) {
-            if (hv.parent == null) continue
+            if (hv.parent == null || !hv.isShown) continue
             val loc = IntArray(2)
             hv.getLocationOnScreen(loc)
             if (x >= loc[0] && x <= loc[0] + hv.width && y >= loc[1] && y <= loc[1] + hv.height) return true
@@ -1043,7 +1282,7 @@ class HomeActivity : BaseActivity() {
     }
 
     private fun needService(what: String) {
-        Sheet.confirm(this, what, "כדי להשתמש בכפתור הזה יש להפעיל את השירות \"הבוקס – פעולות מסך\" בהגדרות הנגישות. השירות לא קורא שום תוכן מהמסך.", "פתיחת הגדרות נגישות") {
+        Sheet.confirm(this, what, "כדי להשתמש בכפתור הזה יש להפעיל את השירות \"היכל הספרים – פעולות מסך\" בהגדרות הנגישות. השירות לא קורא שום תוכן מהמסך.", "פתיחת הגדרות נגישות") {
             go(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
     }
@@ -1106,12 +1345,16 @@ class HomeActivity : BaseActivity() {
                 }
             },
             T("screen", "מסך רגיל") {
-                Sheet.confirm(this, "מעבר למסך הבית הרגיל", "בחרו במסך הבית של BOOX כברירת מחדל. אפשר לחזור להבוקס בכל עת מאותו מקום.", "בחירת מסך בית") {
+                Sheet.confirm(this, "מעבר למסך הבית הרגיל", "בחרו במסך הבית של BOOX כברירת מחדל. אפשר לחזור להיכל הספרים בכל עת מאותו מקום.", "בחירת מסך בית") {
                     go(Intent(Settings.ACTION_HOME_SETTINGS), Intent(Settings.ACTION_SETTINGS))
                 }
             },
             T("calendar", "לוח שנה") { hidePanel(); go(Intent(this, CalendarActivity::class.java)) },
-            T("widget", "גאדג׳טים") { hidePanel(); gadgetPicker() },
+            T("widget", "הוספת רכיב") { hidePanel(); addBlockMenu(curUser()) },
+            T("palette", "ערכת נושא") { hidePanel(); themeMenu() },
+            T("plus", "חלון חדש") { hidePanel(); newPage() },
+            T("folder", "קבצים") { hidePanel(); go(Intent(this, FilesActivity::class.java)) },
+            T("grid", "אפליקציות") { hidePanel(); go(Intent(this, AppsActivity::class.java)) },
             T("gear", "הגדרות") { hidePanel(); go(Intent(this, SettingsActivity::class.java)) },
             T("sliders", "אנדרואיד") { hidePanel(); go(Intent(Settings.ACTION_SETTINGS)) }
         )
@@ -1140,10 +1383,10 @@ class HomeActivity : BaseActivity() {
         }
         br.addView(glyphView("sun", pal.ink, 26))
         val canWrite = Settings.System.canWrite(this)
-        val cur = try { Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS) } catch (e: Exception) { 128 }
+        val curB = try { Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS) } catch (e: Exception) { 128 }
         val seek = SeekBar(this).apply {
             max = 255
-            progress = cur
+            progress = curB
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
                     if (!fromUser) return
@@ -1173,12 +1416,8 @@ class HomeActivity : BaseActivity() {
                 }
             })
         }
-        val close = FrameLayout(this).apply {
-            val pill = View(context).apply { background = roundBg(pal.sub, dp(3).toFloat()) }
-            addView(pill, FrameLayout.LayoutParams(dp(54), dp(5), Gravity.CENTER))
-            setOnClickListener { hidePanel() }
-        }
-        sheet.addView(close, lp(MATCH, dp(30)).m(0, dp(8), 0, 0))
+        val close = pillButton("סגירה", filled = false) { hidePanel() }
+        sheet.addView(close, lp(MATCH, WRAP).m(0, dp(12), 0, dp(2)))
 
         val slp = FrameLayout.LayoutParams(MATCH, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP)
         slp.setMargins(dp(10), dp(8), dp(10), 0)

@@ -80,7 +80,7 @@ class BooksActivity : BaseActivity() {
         if (!hasFiles()) {
             body.removeAllViews()
             val w = FrameLayout(this).apply { setPadding(dp(16), dp(10), dp(16), 0) }
-            w.addView(permissionCard("כדי למצוא את הספרים שבמכשיר יש לאשר להבוקס גישה לקבצים."), FrameLayout.LayoutParams(MATCH, WRAP))
+            w.addView(permissionCard("כדי למצוא את הספרים שבמכשיר יש לאשר להיכל הספרים גישה לקבצים."), FrameLayout.LayoutParams(MATCH, WRAP))
             body.addView(w, FrameLayout.LayoutParams(MATCH, MATCH))
             return
         }

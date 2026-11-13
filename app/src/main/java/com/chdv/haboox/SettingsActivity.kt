@@ -111,16 +111,18 @@ class SettingsActivity : BaseActivity() {
         }
         hero.addView(ImageView(this).apply { setImageResource(R.drawable.logo_big) }, lp(dp(64), dp(64)))
         val hv = vbox()
-        hv.addView(label("הבוקס", 22f, pal.text, true))
+        hv.addView(label("היכל הספרים", 22f, pal.text, true))
         hv.addView(label("מסך בית ל‑BOOX Go 6 · גרסה " + version(), 14f, pal.sub))
         hero.addView(hv, lp(0, WRAP, 1f).m(dp(14), 0, 0, 0))
         list.addView(hero, lp(MATCH, WRAP).m(0, dp(4), 0, 0))
 
         // display
         header("תצוגה")
-        choice("palette", "ערכת צבעים", "theme", "bw", listOf(
-            "bw" to "שחור‑לבן", "vivid" to "חי וצבעוני", "pastel" to "פסטל", "night" to "לילה"
-        )) { restartLook() }
+        choice("palette", "ערכת נושא", "theme", "bw", Look.themes) {
+            if (Look.theme == "custom") ThemeEditor.open(this) { restartLook() } else restartLook()
+        }
+        if (Look.theme == "custom") row("palette", "עריכת הערכה שלי", null) { ThemeEditor.open(this) { restartLook() } }
+        toggle("star", "עיטורים בכרטיס השעון", "heroDeco", true) { restartLook() }
         choice("calendar", "גודל השעון", "clockSize", "large", listOf("normal" to "רגיל", "large" to "גדול", "huge" to "ענק")) { restartLook() }
         toggle("grid", "סמלים על אריח מעוגל", "iconTiles", true) { restartLook() }
         choice("text", "גודל טקסט", "fontSize", "normal", listOf("normal" to "רגיל", "large" to "גדול", "xlarge" to "גדול מאוד")) { restartLook() }
@@ -144,9 +146,19 @@ class SettingsActivity : BaseActivity() {
             go(Intent(this, AppsActivity::class.java).putExtra("manage", true))
         }
         toggle("star", "אפליקציות שהתקנתי – ראשונות", "userFirst", true)
-        row("sliders", "השורה התחתונה", Dock.items().size.toString() + " פריטים") { dockSettings() }
-        row("widget", "גאדג׳טים", Prefs.list("gadgets").size.toString()) {
+        row("sliders", "השורה התחתונה", Dock.items().size.toString() + " מקומות") { DockEditor.open(this) { build() } }
+        row("widget", "הוספת רכיב או גאדג׳ט", Pages.load().size.toString() + " חלונות") {
             go(Intent(this, HomeActivity::class.java).putExtra("gadgets", true))
+        }
+        toggle("chev_down", "החלקה למטה פותחת מרכז בקרה", "swipeDown", true)
+        toggle("plus", "כפתור + לחלון חדש", "showAddWin", true)
+        row("refresh", "איפוס סידור החלונות", null) {
+            Sheet.confirm(this, "איפוס חלונות", "כל החלונות יחזרו לחלון אחד עם שעון, ספרים, אפליקציות ותיקיות.", "איפוס") {
+                Prefs.put("pages", null); Prefs.put("gadgets", null); toast("בוצע")
+            }
+        }
+        row("grid", "רענון רשימת האפליקציות", null) {
+            Thread { Apps.load(this); runOnUiThread { toast("נמצאו ${Apps.all.size} אפליקציות") } }.start()
         }
         row("hide", "אפליקציות מוסתרות", if (hidden.isEmpty()) "אין" else hidden.size.toString()) { hiddenApps() }
         row("folder", "תיקיות במסך הבית", Store.homeFolders().size.toString()) { manageFolders() }
@@ -182,7 +194,7 @@ class SettingsActivity : BaseActivity() {
             if (sd != null) go(Intent(this, FilesActivity::class.java).putExtra("volume", sd.dir.path))
             else toast("לא זוהה כרטיס זיכרון. ודאו שהוא מוכנס ושאושרה גישה לקבצים")
         }
-        row("home", "מסך הבית של המכשיר", if (isDefaultHome()) "הבוקס" else "לא הבוקס") {
+        row("home", "מסך הבית של המכשיר", if (isDefaultHome()) "היכל הספרים" else "לא היכל הספרים") {
             go(Intent(Settings.ACTION_HOME_SETTINGS), Intent(Settings.ACTION_SETTINGS))
         }
         row("windows", "שירות פעולות (חזרה, חלונות)", if (ActionService.enabled(this)) "פעיל" else "כבוי") {
@@ -191,7 +203,7 @@ class SettingsActivity : BaseActivity() {
         row("sun", "הרשאת שינוי בהירות", if (Settings.System.canWrite(this)) "מאושר" else "נדרש אישור") {
             go(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
         }
-        row("info", "הבוקס בהגדרות אנדרואיד", null) {
+        row("info", "היכל הספרים בהגדרות אנדרואיד", null) {
             go(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         }
 
@@ -201,6 +213,8 @@ class SettingsActivity : BaseActivity() {
 
         // about
         header("אודות")
+        row("refresh", "בדיקת עדכונים", "גרסה " + version()) { Updater.check(this, silent = false) }
+        toggle("refresh", "בדיקת עדכונים אוטומטית (פעם ביום)", "autoUpdate", true)
         row("info", "גרסה", version()) { }
         row("edit", "פותח", "שניאור וילהלם") { }
         row("screen", "מותאם ל", "BOOX Go 6 · E‑ink") { }
@@ -208,7 +222,7 @@ class SettingsActivity : BaseActivity() {
 
         val foot = vbox().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, dp(26), 0, 0) }
         foot.addView(ImageView(this).apply { setImageResource(R.drawable.logo_big) }, lp(dp(84), dp(84)))
-        foot.addView(label("הבוקס", 18f, pal.text, true).apply { setPadding(0, dp(8), 0, 0) })
+        foot.addView(label("היכל הספרים", 18f, pal.text, true).apply { setPadding(0, dp(8), 0, 0) })
         foot.addView(label("נבנה באהבה לקוראים", 13f, pal.sub))
         list.addView(foot, lp(MATCH, WRAP))
     }

@@ -90,9 +90,36 @@ class Pal(
 
 object Look {
     val theme: String get() = Prefs.s("theme", "bw")
-    val pastel: Boolean get() = theme == "pastel" || theme == "vivid"
+    val pastel: Boolean get() = theme !in setOf("bw", "contrast", "paper", "night")
 
-    private fun c(v: Long): Int = v.toInt()
+    fun c(v: Long): Int = v.toInt()
+
+    val themes: List<Pair<String, String>> = listOf(
+        "bw" to "שחור‑לבן", "contrast" to "ניגודיות גבוהה", "paper" to "נייר",
+        "vivid" to "חי וצבעוני", "pastel" to "פסטל", "ocean" to "אוקיינוס", "forest" to "יער",
+        "sunset" to "שקיעה", "night" to "לילה (שחור)", "midnight" to "כהה צבעוני", "custom" to "ערכה משלי"
+    )
+
+    val swatches: List<Pair<String, Int>> = listOf(
+        "סגול" to c(0xFF7C3AED), "כחול" to c(0xFF2563EB), "תכלת" to c(0xFF0EA5E9), "טורקיז" to c(0xFF14B8A6),
+        "ירוק" to c(0xFF16A34A), "ליים" to c(0xFF84CC16), "צהוב" to c(0xFFEAB308), "כתום" to c(0xFFF97316),
+        "אדום" to c(0xFFDC2626), "ורוד" to c(0xFFDB2777), "חום" to c(0xFF92400E), "אפור" to c(0xFF475569),
+        "שחור" to c(0xFF111111)
+    )
+
+    fun mix(a: Int, b: Int, t: Float): Int {
+        val r = (Color.red(a) * (1 - t) + Color.red(b) * t).toInt()
+        val g = (Color.green(a) * (1 - t) + Color.green(b) * t).toInt()
+        val bl = (Color.blue(a) * (1 - t) + Color.blue(b) * t).toInt()
+        return Color.rgb(r, g, bl)
+    }
+
+    private fun lightColorful(bg: Long, card2: Long, text: Long, sub: Long, line: Long, tiles: IntArray, a: Int, b: Int): Pal = Pal(
+        bg = c(bg), card = Color.WHITE, card2 = c(card2), text = c(text), sub = c(sub), line = c(line),
+        ink = c(text), onInk = Color.WHITE, tiles = tiles, pastel = true,
+        hero = intArrayOf(a, b), heroText = Color.WHITE, heroSub = mix(Color.WHITE, a, 0.15f),
+        dockBg = c(text), dockFg = Color.WHITE, vivid = true
+    )
 
     fun pal(): Pal = when (theme) {
         "pastel" -> Pal(
@@ -106,16 +133,34 @@ object Look {
             hero = intArrayOf(c(0xFFFFD9D6), c(0xFFD6E8FF)), heroText = c(0xFF1C1C1E), heroSub = c(0xFF5A5A60),
             dockBg = c(0xFFFFFFFF), dockFg = c(0xFF1C1C1E)
         )
-        "vivid" -> Pal(
-            bg = c(0xFFF6F3EE), card = c(0xFFFFFFFF), card2 = c(0xFFEDE8E0),
-            text = c(0xFF16161A), sub = c(0xFF6A6A72), line = c(0xFFE3DDD3),
-            ink = c(0xFF16161A), onInk = Color.WHITE,
-            tiles = intArrayOf(
-                c(0xFFFF8A7A), c(0xFF5EC8C0), c(0xFFFFC857), c(0xFF9B8CFF),
-                c(0xFF6EB5FF), c(0xFF8BD17C), c(0xFFFF9FCB), c(0xFFFFA65C)
-            ), pastel = true,
-            hero = intArrayOf(c(0xFF4F46E5), c(0xFFC026D3)), heroText = Color.WHITE, heroSub = c(0xFFE9E4FF),
-            dockBg = c(0xFF16161A), dockFg = Color.WHITE, vivid = true
+        "vivid" -> lightColorful(0xFFF6F3EE, 0xFFEDE8E0, 0xFF16161A, 0xFF6A6A72, 0xFFE3DDD3, intArrayOf(
+            c(0xFFFF8A7A), c(0xFF5EC8C0), c(0xFFFFC857), c(0xFF9B8CFF),
+            c(0xFF6EB5FF), c(0xFF8BD17C), c(0xFFFF9FCB), c(0xFFFFA65C)
+        ), c(0xFF4F46E5), c(0xFFC026D3))
+        "ocean" -> lightColorful(0xFFF1F7FB, 0xFFE2EEF6, 0xFF0F2433, 0xFF557080, 0xFFD3E3EE, intArrayOf(
+            c(0xFF8FD3FF), c(0xFF7FE0D0), c(0xFFB8C8FF), c(0xFFA5E8FF), c(0xFF9FD8C8), c(0xFFC7E3FF)
+        ), c(0xFF0EA5E9), c(0xFF2563EB))
+        "forest" -> lightColorful(0xFFF3F6EF, 0xFFE4EBDB, 0xFF1B2A17, 0xFF5F6F57, 0xFFD8E0CE, intArrayOf(
+            c(0xFFB5E3A1), c(0xFFE8D98F), c(0xFF9CD3B4), c(0xFFD7E8A6), c(0xFFF2C79A), c(0xFFA8D8C0)
+        ), c(0xFF16A34A), c(0xFF0D9488))
+        "sunset" -> lightColorful(0xFFFFF6EF, 0xFFFBE7D8, 0xFF2B1A12, 0xFF7A5A4A, 0xFFF0DCCD, intArrayOf(
+            c(0xFFFFB38A), c(0xFFFFD27A), c(0xFFFF9AA8), c(0xFFFFC2A0), c(0xFFF7A6D2), c(0xFFFFE08A)
+        ), c(0xFFF97316), c(0xFFDB2777))
+        "paper" -> Pal(
+            bg = c(0xFFF5EFE3), card = c(0xFFFBF7EE), card2 = c(0xFFEDE4D3),
+            text = c(0xFF3B2F22), sub = c(0xFF7D6B55), line = c(0xFFE0D5C1),
+            ink = c(0xFF3B2F22), onInk = c(0xFFF5EFE3),
+            tiles = intArrayOf(c(0xFFFBF7EE)), pastel = false,
+            hero = intArrayOf(c(0xFF3B2F22)), heroText = c(0xFFF5EFE3), heroSub = c(0xFFCDBFA8),
+            dockBg = c(0xFF3B2F22), dockFg = c(0xFFF5EFE3)
+        )
+        "contrast" -> Pal(
+            bg = Color.WHITE, card = Color.WHITE, card2 = c(0xFFDDDDDD),
+            text = Color.BLACK, sub = c(0xFF222222), line = Color.BLACK,
+            ink = Color.BLACK, onInk = Color.WHITE,
+            tiles = intArrayOf(Color.WHITE), pastel = false,
+            hero = intArrayOf(Color.BLACK), heroText = Color.WHITE, heroSub = c(0xFFDDDDDD),
+            dockBg = Color.BLACK, dockFg = Color.WHITE
         )
         "night" -> Pal(
             bg = Color.BLACK, card = c(0xFF1C1C1E), card2 = c(0xFF2C2C2E),
@@ -125,6 +170,16 @@ object Look {
             hero = intArrayOf(c(0xFF1C1C1E)), heroText = Color.WHITE, heroSub = c(0xFFAAAAAA),
             dockBg = c(0xFF1C1C1E), dockFg = Color.WHITE, night = true
         )
+        "midnight" -> Pal(
+            bg = c(0xFF0F1220), card = c(0xFF1A1F35), card2 = c(0xFF262C48),
+            text = Color.WHITE, sub = c(0xFFA7B0D0), line = c(0xFF2C3352),
+            ink = Color.WHITE, onInk = c(0xFF0F1220),
+            tiles = intArrayOf(c(0xFF3B3F8F), c(0xFF0E6B6B), c(0xFF7A3B8F), c(0xFF8F4A2E), c(0xFF2E5C8F), c(0xFF2E7A45)),
+            pastel = true,
+            hero = intArrayOf(c(0xFF6366F1), c(0xFFEC4899)), heroText = Color.WHITE, heroSub = c(0xFFE0E0FF),
+            dockBg = c(0xFF1A1F35), dockFg = Color.WHITE, night = true, vivid = true
+        )
+        "custom" -> custom()
         else -> Pal(
             bg = Color.WHITE, card = c(0xFFF2F2F2), card2 = c(0xFFE4E4E4),
             text = c(0xFF111111), sub = c(0xFF555555), line = c(0xFFCFCFCF),
@@ -135,10 +190,35 @@ object Look {
         )
     }
 
-    fun heroBg(p: Pal, radius: Float): GradientDrawable =
-        if (p.hero.size > 1) GradientDrawable(GradientDrawable.Orientation.TR_BL, p.hero).apply { cornerRadius = radius }
-        else roundBg(p.hero[0], radius)
+    private fun custom(): Pal {
+        val a = Prefs.i("customA", c(0xFF7C3AED))
+        val b = Prefs.i("customB", c(0xFF0EA5E9))
+        val dark = Prefs.s("customBg", "light") == "dark"
+        return if (dark) Pal(
+            bg = mix(Color.BLACK, a, 0.08f), card = mix(Color.BLACK, a, 0.16f), card2 = mix(Color.BLACK, a, 0.26f),
+            text = Color.WHITE, sub = mix(Color.WHITE, a, 0.3f), line = mix(Color.BLACK, a, 0.3f),
+            ink = Color.WHITE, onInk = Color.BLACK,
+            tiles = intArrayOf(mix(Color.BLACK, a, 0.45f), mix(Color.BLACK, b, 0.45f), mix(Color.BLACK, mix(a, b, 0.5f), 0.45f)),
+            pastel = true, hero = intArrayOf(a, b), heroText = Color.WHITE, heroSub = mix(Color.WHITE, a, 0.2f),
+            dockBg = mix(Color.BLACK, a, 0.16f), dockFg = Color.WHITE, night = true, vivid = true
+        ) else Pal(
+            bg = mix(Color.WHITE, a, 0.05f), card = Color.WHITE, card2 = mix(Color.WHITE, a, 0.14f),
+            text = c(0xFF16161A), sub = c(0xFF62626C), line = mix(Color.WHITE, a, 0.18f),
+            ink = c(0xFF16161A), onInk = Color.WHITE,
+            tiles = intArrayOf(mix(Color.WHITE, a, 0.45f), mix(Color.WHITE, b, 0.45f), mix(Color.WHITE, mix(a, b, 0.5f), 0.45f)),
+            pastel = true, hero = intArrayOf(a, b), heroText = Color.WHITE, heroSub = mix(Color.WHITE, a, 0.15f),
+            dockBg = mix(c(0xFF16161A), a, 0.25f), dockFg = Color.WHITE, vivid = true
+        )
+    }
 
+    fun heroBg(p: Pal, radius: Float): Drawable {
+        val base: GradientDrawable =
+            if (p.hero.size > 1) GradientDrawable(GradientDrawable.Orientation.TR_BL, p.hero).apply { cornerRadius = radius }
+            else roundBg(p.hero[0], radius)
+        if (!Prefs.b("heroDeco", true)) return base
+        val light = Color.red(p.heroText) > 128
+        return android.graphics.drawable.LayerDrawable(arrayOf<Drawable>(base, Deco(if (light) 0x22FFFFFF else 0x14000000)))
+    }
     fun clockSize(): Float = when (Prefs.s("clockSize", "large")) {
         "normal" -> 50f
         "huge" -> 84f
@@ -156,7 +236,8 @@ object Look {
     fun bold(): Boolean = Prefs.b("boldText", false)
     fun grayIcons(): Boolean = Prefs.b("grayIcons", !pastel)
     fun sig(): String = Prefs.s("theme", "bw") + Prefs.s("fontSize", "normal") + bold() + grayIcons() +
-        Prefs.s("clockSize", "large") + Prefs.b("iconTiles", true)
+        Prefs.s("clockSize", "large") + Prefs.b("iconTiles", true) + Prefs.b("heroDeco", true) +
+        Prefs.i("customA", 0) + Prefs.i("customB", 0) + Prefs.s("customBg", "light")
 }
 
 /* ---------------------------------------------------------------- helpers */
@@ -343,6 +424,7 @@ class Glyph(private val kind: String, private val color: Int, private val stroke
             "back" -> { st("M4 12 H19.5"); st("M13.5 6 L19.5 12 L13.5 18") }
             "chev_l" -> st("M15 5 L8 12 L15 19")
             "chev_r" -> st("M9 5 L16 12 L9 19")
+            "chev_down" -> st("M5 9 L12 16 L19 9")
             "windows" -> {
                 rr(3f, 8f, 15f, 20f, 2f)
                 st("M7.5 8 V5.5 Q7.5 4 9 4 H19.5 Q21 4 21 5.5 V14.5 Q21 16 19.5 16 H15")
@@ -437,6 +519,26 @@ class Glyph(private val kind: String, private val color: Int, private val stroke
 
     override fun getIntrinsicWidth(): Int = 72
     override fun getIntrinsicHeight(): Int = 72
+}
+
+/** Decorative translucent circles for the hero card. */
+class Deco(private val color: Int) : Drawable() {
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    override fun draw(canvas: Canvas) {
+        val b = bounds
+        p.color = color
+        val w = b.width().toFloat(); val h = b.height().toFloat()
+        canvas.save()
+        canvas.clipRect(b)
+        canvas.drawCircle(b.left + w * 0.1f, b.top + h * 0.05f, h * 0.75f, p)
+        canvas.drawCircle(b.left + w * 0.34f, b.top + h * 1.05f, h * 0.42f, p)
+        canvas.drawCircle(b.left + w * 0.92f, b.top + h * 0.18f, h * 0.12f, p)
+        canvas.restore()
+    }
+    override fun setAlpha(alpha: Int) { p.alpha = alpha }
+    override fun setColorFilter(colorFilter: ColorFilter?) { p.colorFilter = colorFilter }
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
 
 /* ---------------------------------------------------------------- base activity */
