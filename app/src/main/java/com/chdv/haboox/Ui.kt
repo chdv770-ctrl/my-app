@@ -47,6 +47,7 @@ object Prefs {
 
     fun init(c: Context) {
         if (sp == null) sp = c.applicationContext.getSharedPreferences("haboox", Context.MODE_PRIVATE)
+        Store.app = c.applicationContext
     }
 
     private fun p(): SharedPreferences = sp!!
@@ -77,30 +78,74 @@ object Prefs {
 
 /* ---------------------------------------------------------------- palette */
 
+/** pastel == "colorful" (pastel or vivid themes). */
 class Pal(
     val bg: Int, val card: Int, val card2: Int, val text: Int, val sub: Int,
-    val line: Int, val ink: Int, val onInk: Int, val tiles: IntArray, val pastel: Boolean
+    val line: Int, val ink: Int, val onInk: Int, val tiles: IntArray, val pastel: Boolean,
+    val hero: IntArray, val heroText: Int, val heroSub: Int,
+    val dockBg: Int, val dockFg: Int, val night: Boolean = false, val vivid: Boolean = false
 ) {
     fun tile(i: Int): Int = tiles[Math.floorMod(i, tiles.size)]
 }
 
 object Look {
-    val pastel: Boolean get() = Prefs.s("theme", "bw") == "pastel"
+    val theme: String get() = Prefs.s("theme", "bw")
+    val pastel: Boolean get() = theme == "pastel" || theme == "vivid"
 
-    fun pal(): Pal = if (pastel) Pal(
-        bg = 0xFFFBF8F3.toInt(), card = 0xFFFFFFFF.toInt(), card2 = 0xFFF1ECE4.toInt(),
-        text = 0xFF1C1C1E.toInt(), sub = 0xFF6B6B70.toInt(), line = 0xFFE4DED4.toInt(),
-        ink = 0xFF1C1C1E.toInt(), onInk = Color.WHITE,
-        tiles = intArrayOf(
-            0xFFFFD9D6.toInt(), 0xFFD6E8FF.toInt(), 0xFFDDF2D8.toInt(), 0xFFFFF0C7.toInt(),
-            0xFFE8DDFF.toInt(), 0xFFFFE0F0.toInt(), 0xFFD5F3F0.toInt(), 0xFFFFE6CC.toInt()
-        ), pastel = true
-    ) else Pal(
-        bg = Color.WHITE, card = 0xFFF2F2F2.toInt(), card2 = 0xFFE4E4E4.toInt(),
-        text = 0xFF111111.toInt(), sub = 0xFF555555.toInt(), line = 0xFFCFCFCF.toInt(),
-        ink = 0xFF111111.toInt(), onInk = Color.WHITE,
-        tiles = intArrayOf(0xFFF2F2F2.toInt()), pastel = false
-    )
+    private fun c(v: Long): Int = v.toInt()
+
+    fun pal(): Pal = when (theme) {
+        "pastel" -> Pal(
+            bg = c(0xFFFBF8F3), card = c(0xFFFFFFFF), card2 = c(0xFFF1ECE4),
+            text = c(0xFF1C1C1E), sub = c(0xFF6B6B70), line = c(0xFFE4DED4),
+            ink = c(0xFF1C1C1E), onInk = Color.WHITE,
+            tiles = intArrayOf(
+                c(0xFFFFD9D6), c(0xFFD6E8FF), c(0xFFDDF2D8), c(0xFFFFF0C7),
+                c(0xFFE8DDFF), c(0xFFFFE0F0), c(0xFFD5F3F0), c(0xFFFFE6CC)
+            ), pastel = true,
+            hero = intArrayOf(c(0xFFFFD9D6), c(0xFFD6E8FF)), heroText = c(0xFF1C1C1E), heroSub = c(0xFF5A5A60),
+            dockBg = c(0xFFFFFFFF), dockFg = c(0xFF1C1C1E)
+        )
+        "vivid" -> Pal(
+            bg = c(0xFFF6F3EE), card = c(0xFFFFFFFF), card2 = c(0xFFEDE8E0),
+            text = c(0xFF16161A), sub = c(0xFF6A6A72), line = c(0xFFE3DDD3),
+            ink = c(0xFF16161A), onInk = Color.WHITE,
+            tiles = intArrayOf(
+                c(0xFFFF8A7A), c(0xFF5EC8C0), c(0xFFFFC857), c(0xFF9B8CFF),
+                c(0xFF6EB5FF), c(0xFF8BD17C), c(0xFFFF9FCB), c(0xFFFFA65C)
+            ), pastel = true,
+            hero = intArrayOf(c(0xFF4F46E5), c(0xFFC026D3)), heroText = Color.WHITE, heroSub = c(0xFFE9E4FF),
+            dockBg = c(0xFF16161A), dockFg = Color.WHITE, vivid = true
+        )
+        "night" -> Pal(
+            bg = Color.BLACK, card = c(0xFF1C1C1E), card2 = c(0xFF2C2C2E),
+            text = Color.WHITE, sub = c(0xFFAAAAAA), line = c(0xFF3A3A3C),
+            ink = Color.WHITE, onInk = Color.BLACK,
+            tiles = intArrayOf(c(0xFF1C1C1E)), pastel = false,
+            hero = intArrayOf(c(0xFF1C1C1E)), heroText = Color.WHITE, heroSub = c(0xFFAAAAAA),
+            dockBg = c(0xFF1C1C1E), dockFg = Color.WHITE, night = true
+        )
+        else -> Pal(
+            bg = Color.WHITE, card = c(0xFFF2F2F2), card2 = c(0xFFE4E4E4),
+            text = c(0xFF111111), sub = c(0xFF555555), line = c(0xFFCFCFCF),
+            ink = c(0xFF111111), onInk = Color.WHITE,
+            tiles = intArrayOf(c(0xFFF2F2F2)), pastel = false,
+            hero = intArrayOf(c(0xFF111111)), heroText = Color.WHITE, heroSub = c(0xFFBDBDBD),
+            dockBg = c(0xFF111111), dockFg = Color.WHITE
+        )
+    }
+
+    fun heroBg(p: Pal, radius: Float): GradientDrawable =
+        if (p.hero.size > 1) GradientDrawable(GradientDrawable.Orientation.TR_BL, p.hero).apply { cornerRadius = radius }
+        else roundBg(p.hero[0], radius)
+
+    fun clockSize(): Float = when (Prefs.s("clockSize", "large")) {
+        "normal" -> 50f
+        "huge" -> 84f
+        else -> 66f
+    }
+
+    val heavy: Typeface by lazy { Typeface.create("sans-serif-black", Typeface.NORMAL) }
 
     fun scale(): Float = when (Prefs.s("fontSize", "normal")) {
         "large" -> 1.15f
@@ -110,7 +155,8 @@ object Look {
 
     fun bold(): Boolean = Prefs.b("boldText", false)
     fun grayIcons(): Boolean = Prefs.b("grayIcons", !pastel)
-    fun sig(): String = Prefs.s("theme", "bw") + Prefs.s("fontSize", "normal") + bold() + grayIcons()
+    fun sig(): String = Prefs.s("theme", "bw") + Prefs.s("fontSize", "normal") + bold() + grayIcons() +
+        Prefs.s("clockSize", "large") + Prefs.b("iconTiles", true)
 }
 
 /* ---------------------------------------------------------------- helpers */
@@ -363,7 +409,16 @@ class Glyph(private val kind: String, private val color: Int, private val stroke
                 st("M12 3 Q21 3 21 11 Q21 15 17 15 H15 Q13 15 13.8 17 Q15 21 12 21 Q3 21 3 12 Q3 3 12 3 Z")
                 circ(8f, 10f, 1.3f, true); circ(12f, 7f, 1.3f, true); circ(16.2f, 9.5f, 1.3f, true)
             }
-            "star" -> st("M12 3.5 L14.6 9 L20.5 9.6 L16 13.6 L17.3 19.5 L12 16.5 L6.7 19.5 L8 13.6 L3.5 9.6 L9.4 9 Z")
+            "note" -> { st("M5 3.5 H15 L19 7.5 V20.5 H5 Z"); st("M8 10 H16"); st("M8 13.5 H16"); st("M8 17 H13") }
+            "sd" -> {
+                st("M8 3 H18 Q19.5 3 19.5 4.5 V19.5 Q19.5 21 18 21 H6 Q4.5 21 4.5 19.5 V7 Z")
+                st("M9.5 6 V9"); st("M12.5 6 V9"); st("M15.5 6 V9")
+            }
+            "widget" -> {
+                rr(3.5f, 3.5f, 11f, 11f, 2f); rr(13f, 3.5f, 20.5f, 11f, 2f, true)
+                rr(3.5f, 13f, 20.5f, 20.5f, 2f)
+            }
+            "star" ->st("M12 3.5 L14.6 9 L20.5 9.6 L16 13.6 L17.3 19.5 L12 16.5 L6.7 19.5 L8 13.6 L3.5 9.6 L9.4 9 Z")
             else -> circ(12f, 12f, 8f)
         }
         canvas.restore()
@@ -397,6 +452,8 @@ open class BaseActivity : AppCompatActivity() {
         window.statusBarColor = pal.bg
         window.navigationBarColor = pal.bg
         window.setBackgroundDrawable(ColorDrawable(pal.bg))
+        window.decorView.systemUiVisibility = if (pal.night) 0 else
+            (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR)
     }
 
     fun iconButton(kind: String, onClick: () -> Unit): View = FrameLayout(this).apply {
@@ -606,7 +663,61 @@ object Sheet {
         d.show()
     }
 
-    fun input(ctx: Context, title: String, initial: String, hint: String, onOk: (String) -> Unit) {
+    /** Multi-select with order kept by selection. */
+    fun multi(ctx: Context, title: String, options: List<Pair<String, String>>, selected: List<String>, max: Int, onDone: (List<String>) -> Unit) {
+        val pal = Look.pal()
+        val sel = selected.filter { s -> options.any { it.first == s } }.toMutableList()
+        val sh = shell(ctx)
+        val c = card(ctx, pal)
+        lateinit var d: Dialog
+        c.addView(ctx.label(title, 14f, pal.sub, true).apply {
+            gravity = Gravity.CENTER; setPadding(ctx.dp(16), ctx.dp(12), ctx.dp(16), ctx.dp(4))
+        })
+        val hint = ctx.label("", 12.5f, pal.sub).apply { gravity = Gravity.CENTER; setPadding(ctx.dp(16), 0, ctx.dp(16), ctx.dp(10)) }
+        c.addView(hint)
+        c.addView(divider(ctx, pal))
+        val list = ctx.vbox()
+        val marks = ArrayList<TextView>()
+        fun refresh() {
+            hint.text = "נבחרו ${sel.size} מתוך עד $max · הסדר לפי סדר הבחירה"
+            options.forEachIndexed { i, (v, _) ->
+                val n = sel.indexOf(v)
+                marks[i].text = if (n >= 0) (n + 1).toString() else ""
+                marks[i].background = if (n >= 0) roundBg(pal.ink, ctx.dp(13).toFloat())
+                else roundBg(Color.TRANSPARENT, ctx.dp(13).toFloat(), ctx.dp(1), pal.sub)
+            }
+        }
+        options.forEachIndexed { i, (value, text) ->
+            if (i > 0) list.addView(divider(ctx, pal))
+            val mark = ctx.label("", 13f, pal.onInk, true).apply { gravity = Gravity.CENTER }
+            marks.add(mark)
+            val r = ctx.hbox().apply {
+                setPadding(ctx.dp(18), ctx.dp(12), ctx.dp(18), ctx.dp(12))
+                background = ctx.pressBg(Color.TRANSPARENT, pal.card2, 0)
+                addView(ctx.label(text, 17f, pal.ink), lp(0, WRAP, 1f))
+                addView(mark, lp(ctx.dp(26), ctx.dp(26)))
+                setOnClickListener {
+                    if (value in sel) sel.remove(value)
+                    else if (sel.size < max) sel.add(value)
+                    else ctx.toast("אפשר לבחור עד $max")
+                    refresh()
+                }
+            }
+            list.addView(r)
+        }
+        c.addView(limit(ctx, list, options.size))
+        c.addView(divider(ctx, pal))
+        c.addView(row(ctx, pal, "שמירה", false, true) { d.dismiss(); onDone(sel) })
+        sh.addView(c, lp(MATCH, WRAP))
+        val cancel = card(ctx, pal)
+        cancel.addView(row(ctx, pal, "ביטול", false, true) { d.dismiss() })
+        sh.addView(cancel, lp(MATCH, WRAP).m(0, ctx.dp(8), 0, 0))
+        refresh()
+        d = make(ctx, sh)
+        d.show()
+    }
+
+    fun input(ctx: Context, title: String, initial: String, hint: String, multiline: Boolean = false, onOk: (String) -> Unit) {
         val pal = Look.pal()
         val sh = shell(ctx)
         val c = card(ctx, pal)
@@ -617,7 +728,9 @@ object Sheet {
         val et = EditText(ctx).apply {
             setText(initial)
             setHint(hint)
-            setSingleLine(true)
+            if (multiline) {
+                setSingleLine(false); minLines = 3; maxLines = 8; gravity = Gravity.TOP or Gravity.START
+            } else setSingleLine(true)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             setTextColor(pal.text)
             setHintTextColor(pal.sub)

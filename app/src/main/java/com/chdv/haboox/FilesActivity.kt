@@ -26,12 +26,15 @@ class FilesActivity : BaseActivity() {
     }
 
     private lateinit var cur: File
+    private var atVolumes = false
+    private var vols: List<Store.Vol> = emptyList()
     private var items: List<File> = emptyList()
     private lateinit var list: ListView
     private lateinit var crumb: TextView
     private lateinit var empty: TextView
     private lateinit var body: FrameLayout
     private lateinit var actions: LinearLayout
+    private var pickBar: View? = null
     private var pick = false
     private val adapter = Adapter()
     private val df = SimpleDateFormat("dd.MM.yyyy", Locale.US)
@@ -39,15 +42,19 @@ class FilesActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pick = intent.getBooleanExtra("pick", false)
+        vols = Store.volumes()
         val start = intent.getStringExtra("path")?.let { File(it) }
-        cur = if (start != null && start.isDirectory) start else Store.root()
+        if (start != null && start.isDirectory) cur = start
+        else {
+            cur = Store.root()
+            atVolumes = vols.size > 1 && !intent.getBooleanExtra("internal", false)
+        }
+        intent.getStringExtra("volume")?.let { p -> cur = File(p); atVolumes = false }
 
         val content = vbox()
         crumb = label("", 13f, pal.sub).apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.START
-            textDirection = View.TEXT_DIRECTION_LTR
-            gravity = Gravity.END
             setPadding(dp(20), 0, dp(20), dp(8))
         }
         content.addView(crumb, lp(MATCH, WRAP))
@@ -56,10 +63,9 @@ class FilesActivity : BaseActivity() {
             divider = ColorDrawable(pal.line)
             dividerHeight = maxOf(1, dp(0.7f))
             selector = ColorDrawable(Color.TRANSPARENT)
-            isVerticalScrollBarEnabled = true
             adapter = this@FilesActivity.adapter
             setOnItemClickListener { _, _, pos, _ -> tap(items[pos]) }
-            setOnItemLongClickListener { _, _, pos, _ -> itemMenu(items[pos]); true }
+            setOnItemLongClickListener { _, _, pos, _ -> if (!atVolumes) itemMenu(items[pos]); true }
         }
         body.addView(list, FrameLayout.LayoutParams(MATCH, MATCH))
         empty = label("התיקייה ריקה", 16f, pal.sub).apply { gravity = Gravity.CENTER; visibility = View.GONE }
@@ -69,10 +75,12 @@ class FilesActivity : BaseActivity() {
         if (pick) {
             val bar = hbox().apply { setPadding(dp(16), dp(10), dp(16), dp(14)); gravity = Gravity.CENTER }
             bar.addView(pillButton("הוספת התיקייה הזאת למסך הבית") {
+                if (atVolumes) { toast("בחרו קודם אחסון או תיקייה"); return@pillButton }
                 Store.addHomeFolder(cur.path)
                 toast("נוספה למסך הבית: " + Store.folderName(cur.path))
                 finish()
             }, lp(MATCH, WRAP))
+            pickBar = bar
             content.addView(bar, lp(MATCH, WRAP))
         }
 
@@ -80,33 +88,37 @@ class FilesActivity : BaseActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = goUp()
         })
-        buildActions()
     }
 
     override fun onResume() {
         super.onResume()
+        vols = Store.volumes()
         load()
     }
 
     private fun buildActions() {
         actions.removeAllViews()
+        if (atVolumes) return
         if (clip != null) actions.addView(iconButton("paste") { paste() })
         actions.addView(iconButton("plus") { newFolder() })
         actions.addView(iconButton("sort") { sortMenu() })
-        actions.addView(iconButton("home") { cur = Store.root(); load() })
+        if (vols.size > 1) actions.addView(iconButton("sd") { atVolumes = true; load() })
+        else actions.addView(iconButton("home") { cur = Store.root(); load() })
     }
 
     private fun goUp() {
+        if (atVolumes) { finish(); return }
         val p = cur.parentFile
-        if (cur.path == Store.root().path || p == null || !p.canRead()) finish()
-        else { cur = p; load() }
+        if (Store.isVolumeRoot(cur.path) || p == null || !p.canRead()) {
+            if (vols.size > 1 && !atVolumes) { atVolumes = true; load() } else finish()
+        } else { cur = p; load() }
     }
 
     private fun load() {
         if (!hasFiles()) {
             body.removeAllViews()
             val wrap = FrameLayout(this).apply { setPadding(dp(16), dp(20), dp(16), 0) }
-            wrap.addView(permissionCard("כדי לעיין בקבצים יש לאשר להבוקס גישה לכל הקבצים במכשיר."),
+            wrap.addView(permissionCard("כדי לעיין בקבצים ובכרטיס הזיכרון יש לאשר להבוקס גישה לכל הקבצים במכשיר."),
                 FrameLayout.LayoutParams(MATCH, WRAP))
             body.addView(wrap, FrameLayout.LayoutParams(MATCH, MATCH))
             return
@@ -116,27 +128,42 @@ class FilesActivity : BaseActivity() {
             body.addView(list, FrameLayout.LayoutParams(MATCH, MATCH))
             body.addView(empty, FrameLayout.LayoutParams(MATCH, MATCH))
         }
+        if (atVolumes) {
+            items = vols.map { it.dir }
+            adapter.notifyDataSetChanged()
+            empty.visibility = View.GONE
+            setScreenTitle("אחסון")
+            crumb.text = if (vols.any { it.removable }) "זוהה כרטיס זיכרון" else "לא זוהה כרטיס זיכרון"
+            buildActions()
+            return
+        }
         val hidden = Prefs.b("showHidden", false)
         val raw = (cur.listFiles() ?: emptyArray()).filter { hidden || !it.name.startsWith(".") }
         val mode = Prefs.s("sort", "name")
+        val byName = compareBy<File> { it.name.lowercase() }
         val cmp: Comparator<File> = when (mode) {
             "date" -> compareByDescending<File> { it.lastModified() }
             "type" -> compareBy<File> { it.extension.lowercase() }.thenBy { it.name.lowercase() }
             "size" -> compareByDescending<File> { it.length() }
-            else -> compareBy<File> { it.name.lowercase() }
+            else -> byName
         }
-        val dirs = raw.filter { it.isDirectory }.sortedWith(if (mode == "type" || mode == "size") compareBy<File> { it.name.lowercase() } else cmp)
+        val dirs = raw.filter { it.isDirectory }.sortedWith(if (mode == "date") cmp else byName)
         val files = if (pick) emptyList() else raw.filter { !it.isDirectory }.sortedWith(cmp)
         items = dirs + files
         adapter.notifyDataSetChanged()
         list.setSelection(0)
         empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
-        setScreenTitle(if (cur.path == Store.root().path) (if (pick) "בחירת תיקייה" else "אחסון פנימי") else cur.name)
-        crumb.text = cur.path.replace(Store.root().path, "אחסון")
+        val vol = Store.volumeOf(cur.path)
+        setScreenTitle(if (vol != null && vol.dir.path == cur.path) vol.name else cur.name)
+        crumb.text = Store.prettyPath(cur.path)
         buildActions()
     }
 
     private fun tap(f: File) {
+        if (atVolumes) {
+            if (!f.canRead()) { toast("אין גישה לאחסון הזה. ודאו שאושרה גישה לכל הקבצים"); return }
+            cur = f; atVolumes = false; load(); return
+        }
         if (f.isDirectory) { cur = f; load() } else Store.open(this, f)
     }
 
@@ -171,7 +198,7 @@ class FilesActivity : BaseActivity() {
 
     private fun info(f: File) {
         val sb = StringBuilder()
-        sb.append("מיקום: ").append(f.parent ?: "").append('\n')
+        sb.append("מיקום: ").append(Store.prettyPath(f.parent ?: "")).append('\n')
         if (f.isDirectory) sb.append("פריטים: ").append(f.list()?.size ?: 0).append('\n')
         else sb.append("גודל: ").append(Store.sizeStr(f.length())).append('\n')
         sb.append("שונה: ").append(SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.US).format(Date(f.lastModified())))
@@ -216,12 +243,14 @@ class FilesActivity : BaseActivity() {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
             val f = items[position]
             val row: LinearLayout
+            val box: FrameLayout
             val icon: ImageView
             val title: TextView
             val sub: TextView
             val chev: ImageView
             if (convertView is LinearLayout) {
                 row = convertView
+                box = row.findViewWithTag("b")
                 icon = row.findViewWithTag("i")
                 title = row.findViewWithTag("t")
                 sub = row.findViewWithTag("s")
@@ -232,28 +261,37 @@ class FilesActivity : BaseActivity() {
                     minimumHeight = dp(64)
                     background = pressBg(Color.TRANSPARENT, pal.card2, 0)
                 }
-                val box = FrameLayout(this@FilesActivity).apply { background = roundBg(pal.card, dp(12).toFloat()) }
+                box = FrameLayout(this@FilesActivity).apply { tag = "b" }
                 icon = ImageView(this@FilesActivity).apply { tag = "i" }
                 box.addView(icon, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
                 row.addView(box, lp(dp(46), dp(46)))
                 val col = vbox()
-                title = label("", 16f, pal.text).oneLine().apply { tag = "t" } as TextView
-                sub = label("", 12.5f, pal.sub).oneLine().apply { tag = "s" } as TextView
+                title = label("", 16f, pal.text).oneLine().apply { tag = "t" }
+                sub = label("", 12.5f, pal.sub).oneLine().apply { tag = "s" }
                 col.addView(title)
                 col.addView(sub)
                 row.addView(col, lp(0, WRAP, 1f).m(dp(12), 0, dp(8), 0))
                 chev = ImageView(this@FilesActivity).apply { tag = "c" }
                 row.addView(chev, lp(dp(18), dp(18)))
             }
-            val kind = Store.kindOf(f)
+            val kind = if (atVolumes) (if (position == 0) "screen" else "sd") else Store.kindOf(f)
+            val tint = if (pal.pastel) pal.tile(kind.hashCode()) else pal.card
+            box.background = roundBg(tint, dp(12).toFloat())
             icon.setImageDrawable(Glyph(kind, pal.ink))
+            chev.setImageDrawable(Glyph("chev_l", pal.sub))
+            if (atVolumes) {
+                val v = vols[position]
+                title.text = v.name
+                sub.text = Store.sizeStr(v.dir.freeSpace) + " פנויים מתוך " + Store.sizeStr(v.dir.totalSpace)
+                chev.visibility = View.VISIBLE
+                return row
+            }
             title.text = f.name
             sub.text = if (f.isDirectory) {
                 val n = f.list()?.size ?: 0
                 "$n פריטים · " + df.format(Date(f.lastModified()))
             } else Store.sizeStr(f.length()) + " · " + df.format(Date(f.lastModified())) + " · " + f.extension.uppercase()
-            if (f.isDirectory) { chev.visibility = View.VISIBLE; chev.setImageDrawable(Glyph("chev_l", pal.sub)) }
-            else chev.visibility = View.INVISIBLE
+            chev.visibility = if (f.isDirectory) View.VISIBLE else View.INVISIBLE
             if (clip != null && clip?.path == f.path) title.text = f.name + (if (clipCut) "  (נגזר)" else "  (הועתק)")
             return row
         }

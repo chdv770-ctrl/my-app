@@ -118,7 +118,11 @@ class SettingsActivity : BaseActivity() {
 
         // display
         header("תצוגה")
-        choice("palette", "ערכת צבעים", "theme", "bw", listOf("bw" to "שחור‑לבן", "pastel" to "פסטל")) { restartLook() }
+        choice("palette", "ערכת צבעים", "theme", "bw", listOf(
+            "bw" to "שחור‑לבן", "vivid" to "חי וצבעוני", "pastel" to "פסטל", "night" to "לילה"
+        )) { restartLook() }
+        choice("calendar", "גודל השעון", "clockSize", "large", listOf("normal" to "רגיל", "large" to "גדול", "huge" to "ענק")) { restartLook() }
+        toggle("grid", "סמלים על אריח מעוגל", "iconTiles", true) { restartLook() }
         choice("text", "גודל טקסט", "fontSize", "normal", listOf("normal" to "רגיל", "large" to "גדול", "xlarge" to "גדול מאוד")) { restartLook() }
         toggle("edit", "טקסט מודגש", "boldText", false) { restartLook() }
         toggle("grid", "סמלים בגווני אפור", "grayIcons", !Look.pastel) { Apps.clearIcons() }
@@ -136,6 +140,14 @@ class SettingsActivity : BaseActivity() {
             Prefs.put("cols", Prefs.s("colsS", "4").toInt()); build()
         }
         val hidden = Prefs.list("hidden")
+        row("grid", "אילו אפליקציות יופיעו", if (hidden.isEmpty()) "כולן" else "${hidden.size} מוסתרות") {
+            go(Intent(this, AppsActivity::class.java).putExtra("manage", true))
+        }
+        toggle("star", "אפליקציות שהתקנתי – ראשונות", "userFirst", true)
+        row("sliders", "השורה התחתונה", Dock.items().size.toString() + " פריטים") { dockSettings() }
+        row("widget", "גאדג׳טים", Prefs.list("gadgets").size.toString()) {
+            go(Intent(this, HomeActivity::class.java).putExtra("gadgets", true))
+        }
         row("hide", "אפליקציות מוסתרות", if (hidden.isEmpty()) "אין" else hidden.size.toString()) { hiddenApps() }
         row("folder", "תיקיות במסך הבית", Store.homeFolders().size.toString()) { manageFolders() }
         row("refresh", "איפוס שמות, סמלים וסדר", null) {
@@ -165,6 +177,11 @@ class SettingsActivity : BaseActivity() {
         // system
         header("מערכת")
         row("folder", "גישה לכל הקבצים", if (hasFiles()) "מאושר" else "נדרש אישור") { askFiles() }
+        val sd = Store.volumes().firstOrNull { it.removable }
+        row("sd", "כרטיס זיכרון", if (sd != null) Store.sizeStr(sd.dir.freeSpace) + " פנויים" else "לא זוהה") {
+            if (sd != null) go(Intent(this, FilesActivity::class.java).putExtra("volume", sd.dir.path))
+            else toast("לא זוהה כרטיס זיכרון. ודאו שהוא מוכנס ושאושרה גישה לקבצים")
+        }
         row("home", "מסך הבית של המכשיר", if (isDefaultHome()) "הבוקס" else "לא הבוקס") {
             go(Intent(Settings.ACTION_HOME_SETTINGS), Intent(Settings.ACTION_SETTINGS))
         }
@@ -231,6 +248,12 @@ class SettingsActivity : BaseActivity() {
     private fun pickReader() {
         val opts = listOf("" to "ברירת המחדל של המערכת") + readers()
         Sheet.choice(this, "פתיחת ספרים באמצעות", opts, Prefs.s("reader", "")) { v -> Prefs.put("reader", v); build() }
+    }
+
+    private fun dockSettings() {
+        if (Apps.all.isEmpty()) Apps.load(this)
+        val opts = Dock.builtIn + Apps.everything().map { "app:" + it.key to "אפליקציה: " + Apps.name(it) }
+        Sheet.multi(this, "מה יופיע בשורה התחתונה", opts, Dock.items(), 6) { sel -> Dock.save(sel); build() }
     }
 
     private fun hiddenApps() {

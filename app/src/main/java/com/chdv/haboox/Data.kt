@@ -45,7 +45,7 @@ import java.util.zip.ZipFile
 
 /* ================================================================ apps */
 
-class AppEntry(val pkg: String, val cls: String, val label: String) {
+class AppEntry(val pkg: String, val cls: String, val label: String, val system: Boolean = false) {
     val key: String get() = "$pkg/$cls"
     val cn: ComponentName get() = ComponentName(pkg, cls)
 }
@@ -57,15 +57,47 @@ object Apps {
 
     fun load(ctx: Context): List<AppEntry> {
         val pm = ctx.packageManager
-        val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        all = try {
-            pm.queryIntentActivities(i, 0)
-                .filter { it.activityInfo.packageName != ctx.packageName }
-                .map { AppEntry(it.activityInfo.packageName, it.activityInfo.name, it.loadLabel(pm).toString()) }
-                .distinctBy { it.key }
-        } catch (e: Exception) {
-            emptyList()
+        val res = LinkedHashMap<String, AppEntry>()
+        fun isSys(ai: android.content.pm.ApplicationInfo?): Boolean {
+            if (ai == null) return false
+            val sys = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+            val upd = (ai.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            return sys && !upd
         }
+        // 1. LauncherApps – the official launcher API (covers apps on SD card and all profiles)
+        try {
+            val la = ctx.getSystemService(Context.LAUNCHER_APPS_SERVICE) as android.content.pm.LauncherApps
+            for (u in la.profiles) {
+                for (a in la.getActivityList(null, u)) {
+                    val cn = a.componentName
+                    if (cn.packageName == ctx.packageName) continue
+                    val e = AppEntry(cn.packageName, cn.className, a.label.toString(), isSys(a.applicationInfo))
+                    if (!res.containsKey(e.key)) res[e.key] = e
+                }
+            }
+        } catch (e: Exception) { ignore(e) }
+        // 2. PackageManager query – merged in, in case LauncherApps missed something
+        try {
+            val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            for (r in pm.queryIntentActivities(i, PackageManager.MATCH_ALL)) {
+                val p = r.activityInfo.packageName
+                if (p == ctx.packageName) continue
+                val e = AppEntry(p, r.activityInfo.name, r.loadLabel(pm).toString(), isSys(r.activityInfo.applicationInfo))
+                if (!res.containsKey(e.key)) res[e.key] = e
+            }
+        } catch (e: Exception) { ignore(e) }
+        // 3. Any installed package that has a launch intent but no visible LAUNCHER activity
+        try {
+            val known = res.values.map { it.pkg }.toHashSet()
+            for (pi in pm.getInstalledApplications(0)) {
+                if (pi.packageName == ctx.packageName || pi.packageName in known) continue
+                val li = pm.getLaunchIntentForPackage(pi.packageName) ?: continue
+                val cn = li.component ?: continue
+                val e = AppEntry(cn.packageName, cn.className, pm.getApplicationLabel(pi).toString(), isSys(pi))
+                if (!res.containsKey(e.key)) res[e.key] = e
+            }
+        } catch (e: Exception) { ignore(e) }
+        all = res.values.toList()
         return all
     }
 
@@ -81,8 +113,19 @@ object Apps {
             if (a != null && k !in hid) res.add(a)
         }
         val orderSet = order.toSet()
-        res.addAll(all.filter { it.key !in orderSet && it.key !in hid }.sortedBy { name(it).lowercase() })
+        val userFirst = Prefs.b("userFirst", true)
+        res.addAll(all.filter { it.key !in orderSet && it.key !in hid }
+            .sortedWith(compareBy<AppEntry> { if (userFirst && it.system) 1 else 0 }.thenBy { name(it).lowercase() }))
         return res
+    }
+
+    fun everything(): List<AppEntry> =
+        all.sortedWith(compareBy<AppEntry> { if (it.system) 1 else 0 }.thenBy { name(it).lowercase() })
+
+    fun isHidden(a: AppEntry): Boolean = a.key in hidden()
+
+    fun setHidden(keys: Collection<String>) {
+        Prefs.putList("hidden", keys.toList())
     }
 
     fun saveOrder(list: List<AppEntry>) = Prefs.putList("order", list.map { it.key })
@@ -122,6 +165,23 @@ object Apps {
     /** Builds the icon view for an app according to the user's customisation. */
     fun iconView(ctx: Context, a: AppEntry, sizeDp: Int, pal: Pal, index: Int): View {
         val spec = Prefs.s("icon:" + a.key, "orig")
+        val tiled = Prefs.b("iconTiles", true) && !(spec == "letter" || spec.startsWith("emoji:"))
+        if (tiled) {
+            val outer = FrameLayout(ctx)
+            val s = ctx.dp(sizeDp)
+            outer.background = roundBg(
+                if (pal.vivid) pal.card else if (pal.pastel) pal.tile(index) else pal.card,
+                s * 0.26f, if (pal.vivid || pal.night) 0 else ctx.dp(1), pal.line
+            )
+            if (pal.vivid) outer.elevation = ctx.dp(2).toFloat()
+            val inner = (sizeDp * 0.74f).toInt()
+            outer.addView(rawIcon(ctx, a, inner, pal, index, spec), FrameLayout.LayoutParams(ctx.dp(inner), ctx.dp(inner), Gravity.CENTER))
+            return outer
+        }
+        return rawIcon(ctx, a, sizeDp, pal, index, spec)
+    }
+
+    private fun rawIcon(ctx: Context, a: AppEntry, sizeDp: Int, pal: Pal, index: Int, spec: String): View {
         val size = ctx.dp(sizeDp)
         val frame = FrameLayout(ctx)
         when {
@@ -158,6 +218,61 @@ object Apps {
 /* ================================================================ storage */
 
 object Store {
+    lateinit var app: Context
+
+    class Vol(val name: String, val dir: File, val removable: Boolean)
+
+    /** Internal storage + every SD card / USB volume. */
+    private var volCache: List<Vol> = emptyList()
+    private var volAt = 0L
+
+    fun volumes(): List<Vol> {
+        val now = System.currentTimeMillis()
+        if (volCache.isNotEmpty() && now - volAt < 5000) return volCache
+        volCache = readVolumes()
+        volAt = now
+        return volCache
+    }
+
+    private fun readVolumes(): List<Vol> {
+        val out = ArrayList<Vol>()
+        out.add(Vol("אחסון פנימי", root(), false))
+        try {
+            val sm = app.getSystemService(Context.STORAGE_SERVICE) as android.os.storage.StorageManager
+            for (v in sm.storageVolumes) {
+                if (v.isPrimary) continue
+                if (v.state != Environment.MEDIA_MOUNTED && v.state != Environment.MEDIA_MOUNTED_READ_ONLY) continue
+                val d: File? = (if (android.os.Build.VERSION.SDK_INT >= 30) v.directory else null)
+                    ?: v.uuid?.let { File("/storage/$it") }
+                if (d != null && d.exists() && out.none { it.dir.path == d.path }) {
+                    out.add(Vol(if (v.isRemovable) "כרטיס זיכרון" else (v.getDescription(app) ?: d.name), d, v.isRemovable))
+                }
+            }
+        } catch (e: Exception) { ignore(e) }
+        try {
+            File("/storage").listFiles()?.forEach { f ->
+                if (f.name != "emulated" && f.name != "self" && f.isDirectory && f.canRead() && out.none { it.dir.path == f.path }) {
+                    out.add(Vol("כרטיס זיכרון", f, true))
+                }
+            }
+        } catch (e: Exception) { ignore(e) }
+        val sds = out.filter { it.removable }
+        if (sds.size > 1) {
+            return out.map { v -> if (v.removable) Vol(v.name + " " + v.dir.name, v.dir, true) else v }
+        }
+        return out
+    }
+
+    fun volumeOf(path: String): Vol? = volumes().filter { path == it.dir.path || path.startsWith(it.dir.path + "/") }
+        .maxByOrNull { it.dir.path.length }
+
+    fun isVolumeRoot(path: String): Boolean = volumes().any { it.dir.path == path }
+
+    fun prettyPath(path: String): String {
+        val v = volumeOf(path) ?: return path
+        return v.name + path.removePrefix(v.dir.path)
+    }
+
     fun hasAccess(ctx: Context): Boolean =
         if (isAtLeastR()) Environment.isExternalStorageManager()
         else ctx.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
@@ -257,8 +372,9 @@ object Store {
     fun homeFolders(): List<String> {
         if (!Prefs.has("folders")) {
             val r = root()
-            val def = listOf("Books", "Download", "Documents", "Pictures", "Music")
-                .map { File(r, it) }.filter { it.isDirectory }.map { it.path }
+            val def = (listOf("Books", "Download", "Documents", "Pictures", "Music")
+                .map { File(r, it) }.filter { it.isDirectory }.map { it.path } +
+                volumes().filter { it.removable }.map { it.dir.path }).take(6)
             Prefs.putList("folders", def)
             return def
         }
@@ -278,6 +394,7 @@ object Store {
         if (custom.isNotEmpty()) return custom
         val f = File(path)
         if (f.path == root().path) return "אחסון"
+        volumes().firstOrNull { it.dir.path == f.path }?.let { return it.name }
         return when (f.name) {
             "Books" -> "ספרים"
             "Download" -> "הורדות"
@@ -322,7 +439,9 @@ object Books {
                 }
             }
         }
-        try { walk(Store.root(), 0) } catch (e: Exception) { ignore(e) }
+        for (v in Store.volumes()) {
+            try { walk(v.dir, 0) } catch (e: Exception) { ignore(e) }
+        }
         cache = out
         scannedAt = System.currentTimeMillis()
         return out
@@ -359,6 +478,42 @@ object Books {
             val h = history()
             cache.sortedWith(compareByDescending<File> { h[it.path] ?: 0L }.thenByDescending { it.lastModified() })
         }
+    }
+}
+
+/* ================================================================ dock */
+
+object Dock {
+    val builtIn: List<Pair<String, String>> = listOf(
+        "wifi" to "Wi‑Fi", "files" to "קבצים", "books" to "ספרים", "settings" to "הגדרות",
+        "apps" to "כל האפליקציות", "calendar" to "לוח שנה", "control" to "מרכז בקרה",
+        "refresh" to "רענון מסך", "bt" to "בלוטות׳", "sd" to "כרטיס זיכרון", "android" to "הגדרות אנדרואיד"
+    )
+
+    fun items(): List<String> =
+        if (Prefs.has("dock")) Prefs.list("dock") else listOf("wifi", "files", "books", "settings")
+
+    fun save(l: List<String>) = Prefs.putList("dock", l)
+
+    fun addApp(key: String) {
+        val l = items().toMutableList()
+        val k = "app:$key"
+        if (k in l) return
+        if (l.size >= 6) l.removeAt(l.size - 1)
+        l.add(k); save(l)
+    }
+
+    fun glyph(k: String): String = when (k) {
+        "wifi" -> "wifi"; "files" -> "folder"; "books" -> "book"; "settings" -> "gear"
+        "apps" -> "grid"; "calendar" -> "calendar"; "control" -> "sliders"; "refresh" -> "refresh"
+        "bt" -> "bt"; "sd" -> "sd"; "android" -> "screen"; else -> "dots"
+    }
+
+    fun shortLabel(k: String): String = when (k) {
+        "wifi" -> "Wi‑Fi"; "files" -> "קבצים"; "books" -> "ספרים"; "settings" -> "הגדרות"
+        "apps" -> "אפליקציות"; "calendar" -> "לוח"; "control" -> "בקרה"; "refresh" -> "רענון"
+        "bt" -> "בלוטות׳"; "sd" -> "כרטיס"; "android" -> "אנדרואיד"
+        else -> Apps.byKey(k.removePrefix("app:"))?.let { Apps.name(it) } ?: "אפליקציה"
     }
 }
 
